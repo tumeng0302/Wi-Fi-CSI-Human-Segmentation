@@ -1,6 +1,7 @@
 from torchvision.transforms.functional import InterpolationMode
 from torch.utils.data import Dataset
 from torchvision import transforms
+from scipy import signal
 from PIL import Image
 import numpy as np
 import torch
@@ -96,7 +97,8 @@ class CSI_Dataset(Dataset):
         self.data_root = data_root
         self.data_list = get_data_list(split, data_root)
         self.split = split
-        
+        self.b_cha, self.a_cha = signal.butter(5, 100, 'lowpass', fs=2025)
+        self.b_tem, self.a_tem = signal.butter(5, 90, 'lowpass', fs=500)
         self.data_struct = {}
         for data in self.data_list:
             env = data.split('/')[0]
@@ -119,11 +121,26 @@ class CSI_Dataset(Dataset):
     def normalize(self, x: torch.Tensor, mean: float = 0, std: float = 0.5):
         return ((x - x.mean()) / x.std()) * std + mean
 
-    def get_data(self, mask_path, data_path)->tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def denoise(self, x: np.ndarray, type: str):
+        x_filt = signal.filtfilt(self.b_cha, self.a_cha, x, axis=2)
+        x_filt = signal.filtfilt(self.b_tem, self.a_tem, x_filt, axis=0)
+        if type == 'amp':
+            x_filt[:, :, 1001:1024] = 0
+            x_filt[:, :, 1997:] = 0
+        elif type == 'pha':
+            x_filt[:, :, 1997:] = 0
+        return x_filt
+
+    def get_data(self, mask_path, data_path, npy_path)->tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         mask = Image.open(f'{self.data_root}/{mask_path}_mask.png').convert('L')
         mask = self.transform(mask).float()
-        data = np.load(f'{self.data_root}/{data_path}.npz')
-        amp, pha = torch.from_numpy(data['mag'].astype(np.float32)/self.amp_offset), torch.from_numpy(data['pha'].astype(np.float32)/self.pha_offset)
+        amplist, phalist = [], []
+        for npy in enumerate(npy_path):
+            data = np.load(f'{self.data_root}/{data_path+npy}.npz')
+            amplist.append(data['mag'].astype(np.float32)/self.amp_offset)
+            phalist.append(data['pha'].astype(np.float32)/self.pha_offset)
+        amp, pha = np.concatenate(amplist, axis=0), np.concatenate(phalist, axis=0)
+        amp, pha = torch.from_numpy(self.denoise(amp, 'amp')), torch.from_numpy(self.denoise(pha, 'pha'))
         amp, pha = self.normalize(amp), self.normalize(pha)
         if self.split == 'train' and np.random.random() < self.interpolation:
             amp, pha = interpolation(amp, pha)
@@ -131,10 +148,10 @@ class CSI_Dataset(Dataset):
 
     def __getitem__(self, idx):
         choose = np.random.random()
-        data_path = self.data_list[idx]
+        data_path = self.data_list[idx][0]
         env = data_path.split('/')[0]
-        mask_path = data_path.replace('npy', 'img')
-        amp, pha, mask = self.get_data(mask_path, data_path)
+        mask_path = data_path.replace('npy', 'img') + self.data_list[2]
+        amp, pha, mask = self.get_data(mask_path, data_path, self.data_list[1:])
         label = 0
 
         if self.split == 'train':
