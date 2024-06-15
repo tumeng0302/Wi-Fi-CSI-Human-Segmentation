@@ -12,7 +12,7 @@ def get_data_list(split: str, data_root: str):
     if split not in valid_type:
         raise ValueError(f'Invalid split type: {split}, should be one of {valid_type}')
     
-    with open(f'{data_root}/CSI_data_split.json', 'r') as f:
+    with open(f'{data_root}/CSI_data_merge.json', 'r') as f:
         data_list = json.load(f)
     
     if split == 'train':
@@ -32,19 +32,20 @@ def gen_beta(n, rand):
     return beta
 
 def interpolation(amp, pha):
-    rand = torch.rand(26, 26)
-    beta1 = gen_beta(26, rand)
-    beta2 = gen_beta(26, rand)
+    length = amp.size(0)//2 + 1
+    rand = torch.rand(length, length)
+    beta1 = gen_beta(length, rand)
+    beta2 = gen_beta(length, rand)
     for i in range(4):
-        amp_front, amp_behind = amp[:26, i, :], amp[25:, i, :]
-        pha_front, pha_behind = pha[:26, i, :], pha[25:, i, :]
+        amp_front, amp_behind = amp[:length, i, :], amp[length-1:, i, :]
+        pha_front, pha_behind = pha[:length, i, :], pha[length-1:, i, :]
         amp[:, i, :] = torch.cat((
             torch.matmul(amp_front.T, beta1).T, 
-            amp[25, i, :].unsqueeze(0), 
+            amp[length-1, i, :].unsqueeze(0), 
             torch.matmul(amp_behind.T, beta2).T), 0)
         pha[:, i, :] = torch.cat((
             torch.matmul(pha_front.T, beta1).T, 
-            pha[25, i, :].unsqueeze(0), 
+            pha[length-1, i, :].unsqueeze(0), 
             torch.matmul(pha_behind.T, beta2).T), 0)
     return amp, pha
 
@@ -101,7 +102,7 @@ class CSI_Dataset(Dataset):
         self.b_tem, self.a_tem = signal.butter(5, 90, 'lowpass', fs=500)
         self.data_struct = {}
         for data in self.data_list:
-            env = data.split('/')[0]
+            env = data[0].split('/')[0]
             if env not in self.data_struct:
                 self.data_struct[env] = []
             self.data_struct[env].append(data)
@@ -135,12 +136,12 @@ class CSI_Dataset(Dataset):
         mask = Image.open(f'{self.data_root}/{mask_path}_mask.png').convert('L')
         mask = self.transform(mask).float()
         amplist, phalist = [], []
-        for npy in enumerate(npy_path):
-            data = np.load(f'{self.data_root}/{data_path+npy}.npz')
+        for npy in npy_path:
+            data = np.load(f'{self.data_root}/{data_path}/{npy}.npz')
             amplist.append(data['mag'].astype(np.float32)/self.amp_offset)
             phalist.append(data['pha'].astype(np.float32)/self.pha_offset)
         amp, pha = np.concatenate(amplist, axis=0), np.concatenate(phalist, axis=0)
-        amp, pha = torch.from_numpy(self.denoise(amp, 'amp')), torch.from_numpy(self.denoise(pha, 'pha'))
+        amp, pha = torch.from_numpy(self.denoise(amp, 'amp').copy()).float(), torch.from_numpy(self.denoise(pha, 'pha').copy()).float()
         amp, pha = self.normalize(amp), self.normalize(pha)
         if self.split == 'train' and np.random.random() < self.interpolation:
             amp, pha = interpolation(amp, pha)
@@ -150,24 +151,26 @@ class CSI_Dataset(Dataset):
         choose = np.random.random()
         data_path = self.data_list[idx][0]
         env = data_path.split('/')[0]
-        mask_path = data_path.replace('npy', 'img') + self.data_list[2]
-        amp, pha, mask = self.get_data(mask_path, data_path, self.data_list[1:])
+        mask_path = data_path.replace('npy', 'img') + '/' + self.data_list[idx][2]
+        amp, pha, mask = self.get_data(mask_path, data_path, self.data_list[idx][1:])
         label = 0
 
         if self.split == 'train':
             if choose < 0.5:
-                data_path2 = np.random.choice(self.data_struct[env])
-                mask_path2 = data_path2.replace('npy', 'img')
-                amp2, pha2, mask2 = self.get_data(mask_path2, data_path2)
+                idx = np.random.randint(len(self.data_struct[env]))
+                data_path2 = self.data_struct[env][idx]
+                mask_path2 = data_path2[0].replace('npy', 'img') + '/' + data_path2[2]
+                amp2, pha2, mask2 = self.get_data(mask_path2, data_path2[0], data_path2[1:])
                 label = 1
 
             if choose >= 0.5:
                 data_struct = self.data_struct.copy()
                 data_struct.pop(env)
                 env2 = np.random.choice(list(data_struct.keys()))
-                data_path2 = np.random.choice(data_struct[env2])
-                mask_path2 = data_path2.replace('npy', 'img')
-                amp2, pha2, mask2 = self.get_data(mask_path2, data_path2)
+                idx = np.random.randint(len(data_struct[env2]))
+                data_path2 = data_struct[env2][idx]
+                mask_path2 = data_path2[0].replace('npy', 'img') + '/' + data_path2[2]
+                amp2, pha2, mask2 = self.get_data(mask_path2, data_path2[0], data_path2[1:])
                 label = -1
             
             return [[amp, pha, mask], [amp2, pha2, mask2]], torch.tensor(label)

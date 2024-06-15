@@ -1,4 +1,5 @@
 from torchmetrics.image import StructuralSimilarityIndexMeasure as SSIM
+from torchmetrics.classification import BinaryJaccardIndex
 from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data import DataLoader
 from models.FullModel import FullModel
@@ -55,7 +56,9 @@ def main():
     trainloader = DataLoader(trainset, batch_size=log.batch, shuffle=True, num_workers=log.num_workers)
     testset = CSI_Dataset(data_root=DATA_ROOT, split='test')
     testloader = DataLoader(testset, batch_size=24, shuffle=True, num_workers=log.num_workers)
-    
+    valset = CSI_Dataset(data_root=DATA_ROOT, split='val')
+    valloader = DataLoader(valset, batch_size=24, shuffle=True, num_workers=log.num_workers)
+
     if log.optimizer == 'adam':
         optimizer = torch.optim.Adam(net.parameters(), lr=log.lr)
     elif log.optimizer == 'adamw':
@@ -76,21 +79,23 @@ def main():
     ssim = SSIM(data_range=(0., 1.)).to(device)
     mse = nn.MSELoss()
     cosine = nn.CosineEmbeddingLoss(margin=0.1)
+    IoU = BinaryJaccardIndex(threshold=0.5).to(device)
 
-    train_losses = ["total_loss", "cos", "mse", "bce", "ssim", "kl"]
-    test_losses = ["total_loss", "mse", "bce", "ssim"]
-    log.init_loss(train_losses = train_losses, test_losses = test_losses)
+    train_losses = ["total_loss", "cos", "mse", "bce", "ssim", "kl", "IoU"]
+    test_losses = ["total_loss", "mse", "bce", "ssim", "IoU"]
+    metrics = ["total_loss", "mse", "ssim", "IoU"]
+    log.init_loss(train_losses = train_losses, test_losses = test_losses, metrics = metrics)
 
-    def train_loss(out: torch.Tensor, mask: torch.Tensor, mu: torch.Tensor, logvar: torch.Tensor, eps: int)->torch.Tensor:
-        # def ratio(x): return 1/(1+torch.exp(-torch.tensor(0.03*x-1.6)))
+    def train_loss(out: torch.Tensor, mask: torch.Tensor, mu: torch.Tensor, logvar: torch.Tensor)->torch.Tensor:
 
         mse_loss = mse(torch.sigmoid(out), mask) * 100
         bce_loss = bce(out, mask) * 20
         ssim_loss = -ssim(torch.sigmoid(out).float(), mask.float())
         kl_loss = kl_div(mu, logvar) * 100
-        loss = mse_loss + bce_loss + ssim_loss + kl_loss
+        IoU_loss = IoU(torch.sigmoid(out).float(), mask.long())
+        loss = mse_loss + bce_loss + ssim_loss + kl_loss + IoU_loss
 
-        return loss, mse_loss, bce_loss, ssim_loss, kl_loss
+        return loss, mse_loss, bce_loss, ssim_loss, kl_loss, IoU_loss
     
     def feature_loss(features, label)->torch.Tensor:
         cos_loss = 0
@@ -100,12 +105,19 @@ def main():
         cos_loss += (cosine(amp1, amp2, label) + cosine(pha1, pha2, label))/2
         return cos_loss/len(features[0])
 
-    def test_loss(out, mask, eps)->torch.Tensor:
+    def test_loss(out, mask)->torch.Tensor:
         mse_loss = mse(torch.sigmoid(out), mask) * 100
         bce_loss = bce(out, mask) * 20
         ssim_loss = -ssim(torch.sigmoid(out).float(), mask.float())
         loss = mse_loss + bce_loss + ssim_loss
         return loss, mse_loss, bce_loss, ssim_loss
+    
+    def metrics_loss(out, mask)->torch.Tensor:
+        mse_loss = mse(torch.sigmoid(out), mask) * 100
+        ssim_loss = -ssim(torch.sigmoid(out).float(), mask.float())
+        IoU_loss = IoU(torch.sigmoid(out).float(), mask.long())
+        loss = mse_loss + ssim_loss + IoU_loss
+        return loss, mse_loss, ssim_loss, IoU_loss
     
     def random_src_mask(shape: list, ratio: float = 0.):
         mask = torch.rand(shape)
@@ -124,18 +136,18 @@ def main():
             total_loss: torch.Tensor = 0
             
             for amplitude, phase, mask in data:
-                src_mask = random_src_mask([phase.shape[1], phase.shape[1]], 0.1).to(device)
+                src_mask = random_src_mask([phase.shape[1]//3, phase.shape[1]//3], 0.1).to(device)
                 amplitude, phase, mask = amplitude.to(device), phase.to(device), mask.to(device)
 
                 if log.auto_cast:
                     with autocast():
                         out, mu, logvar, amp_channel, pha_channel = net(amplitude, phase, src_mask)
-                        loss, mse_loss, bce_loss, ssim_loss, kl_loss = train_loss(out, mask, mu, logvar, eps)
+                        loss, mse_loss, bce_loss, ssim_loss, kl_loss, IoU_loss = train_loss(out, mask, mu, logvar)
                         total_loss = total_loss + loss
                         
                 else:
                     out, mu, logvar, amp_channel, pha_channel = net(amplitude, phase, src_mask)
-                    loss, mse_loss, bce_loss, ssim_loss, kl_loss = train_loss(out, mask, mu, logvar, eps)
+                    loss, mse_loss, bce_loss, ssim_loss, kl_loss, IoU_loss = train_loss(out, mask, mu, logvar)
                     total_loss = total_loss + loss
 
                 amplitude, phase, src_mask = None, None, None
@@ -169,6 +181,8 @@ def main():
                 bce_loss.item(),
                 -ssim_loss.item(),
                 kl_loss.item(),
+                IoU_loss.item(),
+
             ])
             loss_str = log.train_loss.avg_loss()
             i_bar.set_postfix_str(str(f"{loss_str}"))
@@ -181,7 +195,7 @@ def main():
                     for amplitude, phase, mask in t_bar:
                         amplitude, phase, mask = amplitude.to(device), phase.to(device), mask.to(device)
                         out, _, _, _, _ = net(amplitude, phase)
-                        loss, mse_loss, bce_loss, ssim_loss = test_loss(out, mask, eps)
+                        loss, mse_loss, bce_loss, ssim_loss = test_loss(out, mask)
                         
                         log.test_loss.push_loss([
                             loss.item(),
@@ -192,7 +206,27 @@ def main():
                         loss_str = log.test_loss.avg_loss()
                         t_bar.set_postfix_str(str(f"{loss_str} "))
                         
-                        save_img = torch.cat((mask.cpu(), torch.sigmoid(out).cpu().detach()), dim=2)
+                    save_img = torch.cat((mask.cpu(), torch.sigmoid(out).cpu().detach()), dim=2)
+
+                # ---------------------------validation---------------------------#
+                with torch.no_grad():
+                    v_bar = tqdm(valloader, unit='iter', desc=f"epoch {eps+1}", ncols=140)
+                    for amplitude, phase, mask in v_bar:
+                        amplitude, phase, mask = amplitude.to(device), phase.to(device), mask.to(device)
+                        out, _, _, _, _ = net(amplitude, phase)
+                        loss, mse_loss, ssim_loss, IoU_loss = metrics_loss(out, mask)
+                        
+                        log.val_loss.push_loss([
+                            loss.item(),
+                            mse_loss.item(),
+                            -ssim_loss.item(),
+                            IoU_loss.item(),
+                        ])
+                        loss_str = log.val_loss.avg_loss()
+                        v_bar.set_postfix_str(str(f"{loss_str} "))
+                    
+                    save_img_2 = torch.cat((mask.cpu(), torch.sigmoid(out).cpu().detach()), dim=2)
+                    save_img = torch.cat((save_img, save_img_2), dim=2)
                 log.step(eps, save_img, net.state_dict())
                 net.train()
 

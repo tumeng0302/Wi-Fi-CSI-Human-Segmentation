@@ -339,18 +339,19 @@ class Spacial_Temporal_Embedding(nn.Module):
         self.RxTx_num = shape_input[1]
         self.d_input = shape_input[2]
 
-        self.amp_projection = ProjectionBlock(self.length, self.RxTx_num, self.d_input, d_model//self.RxTx_num)
-        self.pha_projection = ProjectionBlock(self.length, self.RxTx_num, self.d_input, d_model//self.RxTx_num)
-        self.amp_embedding = nn.Parameter(torch.randn(self.length//3*self.RxTx_num, d_model//self.RxTx_num), requires_grad=True)
-        self.pha_embedding = nn.Parameter(torch.randn(self.length//3*self.RxTx_num, d_model//self.RxTx_num), requires_grad=True)
+        self.amp_projection = ProjectionBlock(self.length*3, self.RxTx_num, self.d_input, d_model//self.RxTx_num)
+        self.pha_projection = ProjectionBlock(self.length*3, self.RxTx_num, self.d_input, d_model//self.RxTx_num)
+
+        self.amp_embedding = nn.Parameter(torch.randn(self.length*self.RxTx_num, d_model//self.RxTx_num), requires_grad=True)
+        self.pha_embedding = nn.Parameter(torch.randn(self.length*self.RxTx_num, d_model//self.RxTx_num), requires_grad=True)
 
     def forward(self, amp:torch.Tensor, pha:torch.Tensor):
-        amp = self.amp_projection(amp).view(-1, self.length//3*self.RxTx_num, self.d_model//self.RxTx_num)
-        pha = self.pha_projection(pha).view(-1, self.length//3*self.RxTx_num, self.d_model//self.RxTx_num)
+        amp = self.amp_projection(amp).view(-1, self.length*self.RxTx_num, self.d_model//self.RxTx_num)
+        pha = self.pha_projection(pha).view(-1, self.length*self.RxTx_num, self.d_model//self.RxTx_num)
         amp = amp + self.amp_embedding
         pha = pha + self.pha_embedding
-        amp = amp.view(-1, self.length//3, self.d_model)
-        pha = pha.view(-1, self.length//3, self.d_model)
+        amp = amp.view(-1, self.length, self.d_model)
+        pha = pha.view(-1, self.length, self.d_model)
         return amp, pha
     
 class Gaussian_Range_Embedding(nn.Module):
@@ -371,8 +372,8 @@ class Gaussian_Range_Embedding(nn.Module):
         self.d_input = shape_input[2]
         self.k = k
 
-        self.amp_projection = ProjectionBlock(self.length, self.RxTx_num, self.d_input, d_model//self.RxTx_num)
-        self.pha_projection = ProjectionBlock(self.length, self.RxTx_num, self.d_input, d_model//self.RxTx_num)
+        self.amp_projection = ProjectionBlock(self.length*3, self.RxTx_num, self.d_input, d_model//self.RxTx_num)
+        self.pha_projection = ProjectionBlock(self.length*3, self.RxTx_num, self.d_input, d_model//self.RxTx_num)
 
         self.amp_embedding = nn.init.xavier_uniform_(
             nn.Parameter(torch.empty(self.k, d_model), requires_grad=True),
