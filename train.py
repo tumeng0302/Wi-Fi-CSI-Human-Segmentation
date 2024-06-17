@@ -81,7 +81,7 @@ def main():
     cosine = nn.CosineEmbeddingLoss(margin=0.1)
     IoU = BinaryJaccardIndex(threshold=0.5).to(device)
 
-    train_losses = ["total_loss", "cos", "mse", "bce", "ssim", "kl", "IoU"]
+    train_losses = ["total_loss", "cos", "mse", "bce", "ssim", "IoU", "kl"]
     test_losses = ["total_loss", "mse", "bce", "ssim", "IoU"]
     metrics = ["total_loss", "mse", "ssim", "IoU"]
     log.init_loss(train_losses = train_losses, test_losses = test_losses, metrics = metrics)
@@ -92,7 +92,7 @@ def main():
         bce_loss = bce(out, mask) * 20
         ssim_loss = -ssim(torch.sigmoid(out).float(), mask.float())
         kl_loss = kl_div(mu, logvar) * 100
-        IoU_loss = IoU(torch.sigmoid(out).float(), mask.long())
+        IoU_loss = -IoU(torch.sigmoid(out).float(), mask.long())
         loss = mse_loss + bce_loss + ssim_loss + kl_loss + IoU_loss
 
         return loss, mse_loss, bce_loss, ssim_loss, kl_loss, IoU_loss
@@ -109,13 +109,14 @@ def main():
         mse_loss = mse(torch.sigmoid(out), mask) * 100
         bce_loss = bce(out, mask) * 20
         ssim_loss = -ssim(torch.sigmoid(out).float(), mask.float())
-        loss = mse_loss + bce_loss + ssim_loss
-        return loss, mse_loss, bce_loss, ssim_loss
+        IoU_loss = -IoU(torch.sigmoid(out).float(), mask.long())
+        loss = mse_loss + bce_loss + ssim_loss + IoU_loss
+        return loss, mse_loss, bce_loss, ssim_loss, IoU_loss
     
     def metrics_loss(out, mask)->torch.Tensor:
         mse_loss = mse(torch.sigmoid(out), mask) * 100
         ssim_loss = -ssim(torch.sigmoid(out).float(), mask.float())
-        IoU_loss = IoU(torch.sigmoid(out).float(), mask.long())
+        IoU_loss = -IoU(torch.sigmoid(out).float(), mask.long())
         loss = mse_loss + ssim_loss + IoU_loss
         return loss, mse_loss, ssim_loss, IoU_loss
     
@@ -180,8 +181,8 @@ def main():
                 mse_loss.item(),
                 bce_loss.item(),
                 -ssim_loss.item(),
+                -IoU_loss.item(),
                 kl_loss.item(),
-                IoU_loss.item(),
 
             ])
             loss_str = log.train_loss.avg_loss()
@@ -195,13 +196,14 @@ def main():
                     for amplitude, phase, mask in t_bar:
                         amplitude, phase, mask = amplitude.to(device), phase.to(device), mask.to(device)
                         out, _, _, _, _ = net(amplitude, phase)
-                        loss, mse_loss, bce_loss, ssim_loss = test_loss(out, mask)
+                        loss, mse_loss, bce_loss, ssim_loss, IoU_loss = test_loss(out, mask)
                         
                         log.test_loss.push_loss([
                             loss.item(),
                             mse_loss.item(),
                             bce_loss.item(),
                             -ssim_loss.item(),
+                            -IoU_loss.item(),
                         ])
                         loss_str = log.test_loss.avg_loss()
                         t_bar.set_postfix_str(str(f"{loss_str} "))
@@ -216,17 +218,17 @@ def main():
                         out, _, _, _, _ = net(amplitude, phase)
                         loss, mse_loss, ssim_loss, IoU_loss = metrics_loss(out, mask)
                         
-                        log.val_loss.push_loss([
+                        log.metrics.push_loss([
                             loss.item(),
                             mse_loss.item(),
                             -ssim_loss.item(),
-                            IoU_loss.item(),
+                            -IoU_loss.item(),
                         ])
-                        loss_str = log.val_loss.avg_loss()
+                        loss_str = log.metrics.avg_loss()
                         v_bar.set_postfix_str(str(f"{loss_str} "))
                     
                     save_img_2 = torch.cat((mask.cpu(), torch.sigmoid(out).cpu().detach()), dim=2)
-                    save_img = torch.cat((save_img, save_img_2), dim=2)
+                    save_img = torch.cat((save_img, save_img_2), dim=0)
                 log.step(eps, save_img, net.state_dict())
                 net.train()
 
