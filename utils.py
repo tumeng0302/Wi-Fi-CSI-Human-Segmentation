@@ -251,15 +251,18 @@ class Training_Log():
 
         if self.save_weight and net_weight is not None:
             compiled = '_compiled' if self.compile else ''
+
             if self.judgement(self.test_loss._total_loss, self.best) and self.epochs >= self.weight_start:
-                torch.save(
-                    net_weight, f"{self.WEIGHT_SAVE}/ck_{str(self.epochs).zfill(4)}{compiled}.pt")
+                torch.save(net_weight, f"{self.WEIGHT_SAVE}/ck_{str(self.epochs).zfill(4)}{compiled}.pt")
+
                 if optimizer_state != None:
-                    torch.save(
-                        optimizer_state, f"{self.WEIGHT_SAVE}/ck_{str(self.epochs).zfill(4)}{compiled}_optim.pt")
+                    torch.save(optimizer_state, f"{self.WEIGHT_SAVE}/ck_{str(self.epochs).zfill(4)}{compiled}_optim.pt")
+
                 self.best = self.test_loss._total_loss
+
             torch.save(net_weight, f"{self.WEIGHT_SAVE}/ck_last{compiled}.pt")
             torch.save(optimizer_state, f"{self.WEIGHT_SAVE}/ck_last{compiled}_optim.pt")
+            
         elif self.save_weight and not self.warning:
             if net_weight == None :
                 print("\033[0;33m[WARNING] No weight saved. Please check your input model weight!\033[0m")
