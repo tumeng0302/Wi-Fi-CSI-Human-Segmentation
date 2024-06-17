@@ -224,25 +224,31 @@ class Training_Log():
         ax.spines[:].set_color(self.lightGray)
         return ax
 
-    def step(self, epochs=None, result_img=None, net_weight=None, optimizer_state=None):
+    def step(self, epochs=None, net_weight=None, optimizer_state=None, **kwargs):
         """
         Args:
-            result_img (Tensor): Image of the result of the model. shape: [batch, channel, height, width]
             net_weight (OrderedDict): The state_dict of the model.
             valid_value (Any): The value of the validation.
+            img to save [train_img, test_img, val_img, result_img](torch.Tensor) shape: [batch, channel, height, width]
         """
         if self.step_mode == 'step' and epochs is not None:
             self.epochs = epochs
         else:
             self.epochs += 1
+        
+        # Save loss to txt and fig
         self.loss_txt_log()
         if self.save_loss_fig:
             self.loss_fig_log()
 
-        if result_img is not None:
-            save_name = f"{self.epochs:04d}e.png" if self.step_mode == 'epoch' else f"{self.train_loss.steps:06d}s.png"
-            utils.save_image(result_img.float(),
-                             f"{self.STEP_SAVE}/{save_name}", pad_value=0.3)
+        for key, value in kwargs.items():
+            if key not in ['train_img', 'test_img',' val_img', 'result_img']:
+                Warning(f'Invalid key: {key}, only support [train_img, test_img, val_img, result_img]')
+                continue
+            if value is not None:
+                save_name = f"{key}_{self.epochs:04d}e.png" if self.step_mode == 'epoch' else f"{key}_{self.train_loss.steps:06d}s.png"
+                utils.save_image(value.float(), f"{self.STEP_SAVE}/{save_name}", pad_value=0.3)
+
         if self.save_weight and net_weight is not None:
             compiled = '_compiled' if self.compile else ''
             if self.judgement(self.test_loss._total_loss, self.best) and self.epochs >= self.weight_start:
