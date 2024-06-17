@@ -241,13 +241,18 @@ class Training_Log():
         if self.save_loss_fig:
             self.loss_fig_log()
 
+        print(kwargs.keys())
         for key, value in kwargs.items():
-            if key not in ['train_img', 'test_img',' val_img', 'result_img']:
-                Warning(f'Invalid key: {key}, only support [train_img, test_img, val_img, result_img]')
+            if key not in ['train_img', 'test_img', 'val_img', 'result_img']:
+                print(f"\033[0;33m[WARNING] Invalid key: {key}, only support [train_img, test_img, val_img, result_img]\033[0m")
                 continue
             if value is not None:
                 save_name = f"{key}_{self.epochs:04d}e.png" if self.step_mode == 'epoch' else f"{key}_{self.train_loss.steps:06d}s.png"
                 utils.save_image(value.float(), f"{self.STEP_SAVE}/{save_name}", pad_value=0.3)
+                print(f"\033[0;32m[INFO]Image of {key} has been saved.\033[0m")
+
+            elif value is None:
+                print(f"\033[0;33m[WARNING]Receive 'None', no image saved for {key}.\033[0m")
 
         if self.save_weight and net_weight is not None:
             compiled = '_compiled' if self.compile else ''
