@@ -189,6 +189,7 @@ def main():
             i_bar.set_postfix_str(str(f"{loss_str}"))
             
             if steps % 3000 == 0 and steps != 0:
+                train_img = torch.cat((mask.cpu(), torch.sigmoid(out).cpu().detach()), dim=2)
                 # ---------------------------testing---------------------------#
                 net.eval()
                 with torch.no_grad():
@@ -208,7 +209,7 @@ def main():
                         loss_str = log.test_loss.avg_loss()
                         t_bar.set_postfix_str(str(f"{loss_str} "))
                         
-                    save_img = torch.cat((mask.cpu(), torch.sigmoid(out).cpu().detach()), dim=2)
+                    test_img = torch.cat((mask.cpu(), torch.sigmoid(out).cpu().detach()), dim=2)
 
                 # ---------------------------validation---------------------------#
                 with torch.no_grad():
@@ -227,9 +228,8 @@ def main():
                         loss_str = log.metrics.avg_loss()
                         v_bar.set_postfix_str(str(f"{loss_str} "))
                     
-                    save_img_2 = torch.cat((mask.cpu(), torch.sigmoid(out).cpu().detach()), dim=2)
-                    save_img = torch.cat((save_img, save_img_2), dim=0)
-                log.step(eps, save_img, net.state_dict())
+                    val_img = torch.cat((mask.cpu(), torch.sigmoid(out).cpu().detach()), dim=2)
+                log.step(eps, net.state_dict(), train_img=train_img, test_img=test_img, val_img=val_img)
                 net.train()
 
         scheduler.step()
