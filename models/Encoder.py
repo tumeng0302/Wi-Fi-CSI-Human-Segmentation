@@ -75,7 +75,7 @@ class ChannelStream(nn.Module):
             amp_msc = self.amp_msc(amp_ma)
             pha_msc = self.pha_msc(pha_ma)
 
-        amp, pha = self.rev_att(amp, pha, amp_msc, pha_msc)
+        amp, pha = self.rev_att(amp_msc, pha_msc, amp, pha)
 
         return amp, pha
     

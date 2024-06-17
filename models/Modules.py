@@ -300,8 +300,9 @@ class ProjectionBlock(nn.Module):
             nn.LayerNorm(out_channels),
             Activation(activation),
             )
+        self.pool_3 = nn.AvgPool1d(3, 3, 0)
+        self.pool_5 = nn.AvgPool1d(5, 3, 1)
         self.temporal_projection = nn.Sequential(
-            nn.AvgPool1d(3, 3),
             nn.Linear(in_length//3, in_length//3),
             nn.LayerNorm(in_length//3),
             Activation(activation),
@@ -315,6 +316,7 @@ class ProjectionBlock(nn.Module):
 
         x = x.permute(0, 3, 2, 1).contiguous()
         x = x.view(-1, self.out_channels*self.RxTx_num, self.in_length)
+        x = (x[:, :, 1::3]*4 + self.pool_3(x)*2 + self.pool_5(x)*1)/7
         x = self.temporal_projection(x)
         x = x.view(-1, self.out_channels, self.RxTx_num, self.in_length//3)
         x = x.permute(0, 3, 2, 1).contiguous()
