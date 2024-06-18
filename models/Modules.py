@@ -237,6 +237,38 @@ class MultiScale_Convolution_Block(nn.Module):
             out = self.l_norm(inputs + self._msc_forward(inputs.transpose(1, 2)))
         return out
     
+class CrossAggregationBlock(nn.Module):
+    def __init__(self, 
+                 in_length: int = 51, in_channels: int = 3072,
+                 out_length: int = 12, out_channels: int = 1024,
+                 activation: str = 'GELU', dropout: float = 0.1):
+        super(CrossAggregationBlock, self).__init__()
+        self.amp_block = nn.Sequential(
+            nn.Linear(in_channels, out_channels//2),
+            nn.LayerNorm(out_channels//2),
+            Activation(activation),
+            nn.Dropout(dropout),
+        )
+        self.pha_block = nn.Sequential(
+            nn.Linear(in_channels, out_channels//2),
+            nn.LayerNorm(out_channels//2),
+            Activation(activation),
+            nn.Dropout(dropout),
+        )
+        self.CA_block = Cross_Attn_Block(out_channels, 8, dropout=dropout)
+        self.ff_block = FF_Block(out_channels, 2048, dropout=dropout, activation=activation)
+        self.out_container = nn.Parameter(torch.empty(out_length, out_channels), requires_grad=True)
+        nn.init.xavier_uniform_(self.out_container, gain=1.0)
+    
+    def forward(self, amp: torch.Tensor, pha: torch.Tensor):
+        amp = self.amp_block(amp)
+        pha = self.pha_block(pha)
+        csi = torch.cat((amp, pha), dim=2)
+        Q = self.out_container.unsqueeze(0).repeat(csi.size(0), 1, 1)
+        Q = self.CA_block(Q, csi, csi)
+        Q = self.ff_block(Q)
+        return Q
+
 class AggregationBlock(nn.Module):
     def __init__(self, 
                  in_length: int = 51, in_channels: int = 3072,
