@@ -267,6 +267,7 @@ class CrossAggregationBlock(nn.Module):
         Q = self.out_container.unsqueeze(0).repeat(csi.size(0), 1, 1)
         Q = self.CA_block(Q, csi, csi)
         Q = self.ff_block(Q)
+        Q = Q.view(Q.size(0), -1)
         return Q
 
 class AggregationBlock(nn.Module):
