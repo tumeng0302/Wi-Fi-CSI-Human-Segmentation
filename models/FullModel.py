@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from models.VAE import Decoder
 from models.Encoder import ERC_Transformer
-from models.Modules import AggregationBlock
+from models.Modules import AggregationBlock, CrossAggregationBlock
 from functools import reduce
 
 class FullModel(nn.Module):
@@ -23,7 +23,10 @@ class FullModel(nn.Module):
         self.fc_mu = nn.Linear(latent_dim, latent_dim)
         self.fc_var = nn.Linear(latent_dim, latent_dim)
         self.fc = nn.Linear(latent_dim, latent_dim)
-        self.aggr = AggregationBlock(**CONFIG['AggregationBlock'])
+        if CONFIG['FullModel']['aggregation'] == 'cross':
+            self.aggr = CrossAggregationBlock(**CONFIG['AggregationBlock'])
+        else:
+            self.aggr = AggregationBlock(**CONFIG['AggregationBlock'])
 
     def reparameterize(self, mu, log_var):
         std = torch.exp(0.5*log_var)
