@@ -241,7 +241,7 @@ class Training_Log():
         if self.save_loss_fig:
             self.loss_fig_log()
 
-        print(kwargs.keys())
+
         for key, value in kwargs.items():
             if key not in ['train_img', 'test_img', 'val_img', 'result_img']:
                 print(f"\033[0;33m[WARNING] Invalid key: {key}, only support [train_img, test_img, val_img, result_img]\033[0m")
