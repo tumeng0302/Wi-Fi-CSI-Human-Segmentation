@@ -12,7 +12,7 @@ def get_data_list(split: str, data_root: str):
     if split not in valid_type:
         raise ValueError(f'Invalid split type: {split}, should be one of {valid_type}')
     
-    with open(f'{data_root}/CSI_data_split.json', 'r') as f:
+    with open(f'{data_root}/CSI_data_merge.json', 'r') as f:
         data_list = json.load(f)
     
     if split == 'train':
