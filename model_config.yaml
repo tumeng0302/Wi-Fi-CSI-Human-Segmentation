@@ -37,3 +37,4 @@ FullModel:
     - 4
   activation: 'gelu'
   dropout: 0.1
+  aggregation: 'cross'
