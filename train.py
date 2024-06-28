@@ -48,8 +48,24 @@ def main():
     
     if log.resume is not None:
         print(f'[INFO] Resume traing from check-point: {log.resume}')
-        net.load_state_dict(torch.load(log.resume))
+        net_weight = torch.load(log.resume)
+        for name, param in net.named_parameters():
+            if 'decoder' in name:
+                continue
+            if name in net_weight:
+                param.data = net_weight[name]
+            else:
+                print(f'[Warning] \"{name}\"<- parameter not in pre-trained weight!')
         print('[INFO] Model loaded successfully!')
+        net_weight = None
+    
+    print(f'[INFO] The following parameters is fixed:')
+    for name, param in net.named_parameters():
+        if not param.requires_grad:
+            print(f'\t{name}')
+    
+    print(f'[INFO] Total parameters: {sum(p.numel() for p in net.parameters())}')
+    print(f'[INFO] Trainable parameters: {sum(p.numel() for p in net.parameters() if p.requires_grad)}')
     
     # <--------------------------------------Load Dataset-------------------------------------->
     trainset = CSI_Dataset(data_root=DATA_ROOT, split='train', interpolation=0.5)
