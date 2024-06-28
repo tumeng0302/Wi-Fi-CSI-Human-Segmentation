@@ -39,6 +39,6 @@ class FullModel(nn.Module):
         mu = self.fc_mu(out)
         log_var = self.fc_var(out)
         z = self.reparameterize(mu, log_var)
-        z = self.fc(z) + out
+        z = self.fc(z)
         z = z.reshape(-1, self.lat_shape[0], self.lat_shape[1], self.lat_shape[2])
         return self.decoder(z), mu, log_var, amp_channel, pha_channel
