@@ -1,0 +1,114 @@
+import sys
+sys.path.append('/root/Wi-Fi-CSI-Human-Segmentation')
+from Dataset import interpolation, get_data_list
+from torch.utils.data import Dataset
+from torchvision import transforms
+from torchvision.transforms import InterpolationMode
+import numpy as np
+import torch
+from PIL import Image
+import pyopenpose as op
+import cv2
+import json
+
+def get_data_list(split: str, data_root: str):
+    valid_type = ['train', 'train_1', 'train_2', 'train_3', 'val', 'test', 'occu', 'random']
+    if split not in valid_type:
+        raise ValueError(f'Invalid split type: {split}, should be one of {valid_type}')
+    
+    with open(f'{data_root}/CSI_data_split.json', 'r') as f:
+        data_list = json.load(f)
+    
+    if split == 'train':
+        data_list = data_list['train_0'] + data_list['train_1'] + data_list['train_2'] + data_list['train_3']
+    elif split in ['train_1', 'train_2', 'train_3']:
+        data_list = data_list['train_0'] + data_list[split]
+    else:
+        data_list = data_list[split]
+
+    return data_list
+
+class PersonInWifiDataset(Dataset):
+    def __init__(self, 
+                 data_root: str, split: str = 'train', 
+                 crop_size: tuple = (192, 256), interpolation: float = -1,
+                 amp_offset: float = 60000, pha_offset: float = 28000,
+                 skeleton_model: str = '/root/openpose/models'):
+        super().__init__()
+        self.data_root = data_root
+        self.crop_size = crop_size
+        self.data_list = get_data_list(split, data_root)
+        self.split = split
+        self.data_struct = {}
+        for data in self.data_list:
+            env = data[0].split('/')[0]
+            if env not in self.data_struct:
+                self.data_struct[env] = []
+            self.data_struct[env].append(data)
+
+        self.transform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Resize(
+                crop_size, interpolation=InterpolationMode.NEAREST),
+        ])
+        self.BItransform = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Resize(crop_size, antialias=True),
+        ])
+        self.interpolation = interpolation
+        self.amp_offset = amp_offset
+        self.pha_offset = pha_offset
+
+        # Skeleton
+        params = {
+            "model_folder": skeleton_model,
+            "heatmaps_add_parts": True,
+            "heatmaps_add_PAFs": True,
+            "heatmaps_add_bkg": True,
+            "heatmaps_scale": 2,
+        }
+        self.opWrapper = op.WrapperPython()
+        self.opWrapper.configure(params)
+        self.opWrapper.start()
+
+    def normalize(self, x: torch.Tensor, mean: float = 0, std: float = 0.5):
+        return ((x - x.mean()) / x.std()) * std + mean  
+
+    def get_data(self, img_path, data_path)->tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # Mask
+        mask = Image.open(f'{self.data_root}/{img_path}_mask.png').convert('L')
+        mask = self.transform(mask).float()
+        # Skeleton
+        img = cv2.imread(f'{self.data_root}/{img_path}.jpg')
+        img = cv2.resize(img, self.crop_size[::-1])
+        datum = op.Datum()
+        datum.cvInputData = img
+        self.opWrapper.emplaceAndPop(op.VectorDatum([datum]))
+        heatmaps = datum.poseHeatMaps.copy()
+        heatmaps = (heatmaps).astype(dtype='uint8')
+        jhm = self.BItransform(heatmaps[:25].transpose(1, 2, 0))
+        paf = self.BItransform(heatmaps[26:].transpose(1, 2, 0))
+        img = self.BItransform(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        # CSI
+        data = np.load(f'{self.data_root}/{data_path}.npz')
+        amp = torch.from_numpy(data['mag'].astype(np.float32)/self.amp_offset)
+        pha = torch.from_numpy(data['pha'].astype(np.float32)/self.pha_offset)
+        amp, pha = self.normalize(amp), self.normalize(pha)
+        if self.split == 'train' and np.random.random() < self.interpolation:
+            amp, pha = interpolation(amp, pha)
+        return amp, pha, mask, jhm, paf, img
+
+    def __getitem__(self, idx):
+        data_path = self.data_list[idx]
+        env = data_path.split('/')[0]
+        img_path = data_path.replace('npy', 'img')
+        amp, pha, mask, jhm, paf, img = self.get_data(img_path, data_path)    
+        
+        return amp, pha, mask, jhm, paf, img
+    
+    def __len__(self):
+        return len(self.data_list)
+    
+if __name__ == '__main__':
+    dataset = PersonInWifiDataset(data_root='/root/CSI_Dataset')
+    print(dataset[0])
