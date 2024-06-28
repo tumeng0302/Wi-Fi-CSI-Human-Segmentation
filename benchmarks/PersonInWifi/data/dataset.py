@@ -32,8 +32,7 @@ class PersonInWifiDataset(Dataset):
     def __init__(self, 
                  data_root: str, split: str = 'train', 
                  crop_size: tuple = (192, 256), interpolation: float = -1,
-                 amp_offset: float = 60000, pha_offset: float = 28000,
-                 skeleton_model: str = '/root/openpose/models'):
+                 amp_offset: float = 60000, pha_offset: float = 28000,):
         super().__init__()
         self.data_root = data_root
         self.crop_size = crop_size
@@ -51,25 +50,9 @@ class PersonInWifiDataset(Dataset):
             transforms.Resize(
                 crop_size, interpolation=InterpolationMode.NEAREST),
         ])
-        self.BItransform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Resize(crop_size, antialias=True),
-        ])
         self.interpolation = interpolation
         self.amp_offset = amp_offset
         self.pha_offset = pha_offset
-
-        # Skeleton
-        params = {
-            "model_folder": skeleton_model,
-            "heatmaps_add_parts": True,
-            "heatmaps_add_PAFs": True,
-            "heatmaps_add_bkg": True,
-            "heatmaps_scale": 2,
-        }
-        self.opWrapper = op.WrapperPython()
-        self.opWrapper.configure(params)
-        self.opWrapper.start()
 
     def normalize(self, x: torch.Tensor, mean: float = 0, std: float = 0.5):
         return ((x - x.mean()) / x.std()) * std + mean  
@@ -81,14 +64,6 @@ class PersonInWifiDataset(Dataset):
         # Skeleton
         img = cv2.imread(f'{self.data_root}/{img_path}.jpg')
         img = cv2.resize(img, self.crop_size[::-1])
-        datum = op.Datum()
-        datum.cvInputData = img
-        self.opWrapper.emplaceAndPop(op.VectorDatum([datum]))
-        heatmaps = datum.poseHeatMaps.copy()
-        heatmaps = (heatmaps).astype(dtype='uint8')
-        jhm = self.BItransform(heatmaps[:25].transpose(1, 2, 0))
-        paf = self.BItransform(heatmaps[26:].transpose(1, 2, 0))
-        img = self.BItransform(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
         # CSI
         data = np.load(f'{self.data_root}/{data_path}.npz')
         amp = torch.from_numpy(data['mag'].astype(np.float32)/self.amp_offset)
@@ -96,15 +71,15 @@ class PersonInWifiDataset(Dataset):
         amp, pha = self.normalize(amp), self.normalize(pha)
         if self.split == 'train' and np.random.random() < self.interpolation:
             amp, pha = interpolation(amp, pha)
-        return amp, pha, mask, jhm, paf, img
+        return amp, pha, mask, img
 
     def __getitem__(self, idx):
         data_path = self.data_list[idx]
         env = data_path.split('/')[0]
         img_path = data_path.replace('npy', 'img')
-        amp, pha, mask, jhm, paf, img = self.get_data(img_path, data_path)    
+        amp, pha, mask, img = self.get_data(img_path, data_path)    
         
-        return amp, pha, mask, jhm, paf, img
+        return amp, pha, mask, img
     
     def __len__(self):
         return len(self.data_list)
