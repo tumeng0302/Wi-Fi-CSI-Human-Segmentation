@@ -38,3 +38,19 @@ FullModel:
   activation: 'gelu'
   dropout: 0.1
   aggregation: 'cross'
+
+Adapter_Block:
+  in_length: 51
+  in_channels: 3072
+  out_length: 12
+  out_channels: 1024
+  activation: 'gelu'
+  dropout: 0.1
+
+Out_Adapter_Block:
+  in_length: 51
+  in_channels: 3072
+  out_length: 48
+  out_channels: 256
+  activation: 'gelu'
+  dropout: 0.1
