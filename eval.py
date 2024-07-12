@@ -2,7 +2,7 @@ from torchmetrics.image import StructuralSimilarityIndexMeasure as SSIM
 from torchmetrics.classification import BinaryJaccardIndex
 from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data import DataLoader
-from models.FullModel import FullModel
+from models.FullModel import FullModel_Finetune
 from models.optimizer import Lion
 from Dataset import CSI_Dataset
 from models.VAE import Decoder
@@ -30,9 +30,9 @@ def main():
     with open('./model_config.yaml', 'r') as f:
         config = yaml.load(f, Loader=yaml.CLoader)
     if log.compile:
-        net = torch.compile(FullModel(config, decoder).to(device))
+        net = torch.compile(FullModel_Finetune(config, decoder).to(device))
     else:
-        net = FullModel(config, decoder).to(device)
+        net = FullModel_Finetune(config, decoder).to(device)
     
     if log.resume is not None:
         print(f'[INFO] Resume traing from check-point: {log.resume}')
@@ -52,10 +52,10 @@ def main():
     ssim = SSIM(data_range=(0., 1.)).to(device)
     mse = nn.MSELoss()
     IoU = BinaryJaccardIndex(threshold=THRESHOLD).to(device)
-
+    train_losses = ["Dummy"]
     test_losses = ["IoU", "mse", "ssim", ]
     metrics = ["IoU", "mse", "ssim", ]
-    log.init_loss(test_losses = test_losses, metrics = metrics)
+    log.init_loss(train_losses = train_losses, test_losses = test_losses, metrics = metrics)
     def metrics_loss(out, mask)->torch.Tensor:
         mse_loss = mse(torch.sigmoid(out), mask)
         ssim_loss = ssim(torch.sigmoid(out).float(), mask.float())
@@ -65,6 +65,9 @@ def main():
 
     print('[INFO] Start training...')
     net.eval()
+    log.train_loss.push_loss([0.0])
+    loss_str = log.train_loss.avg_loss()
+    print(f"{'train':<5} - {loss_str}")
     # ---------------------------testing---------------------------#
     with torch.no_grad():
         t_bar = tqdm(testloader, unit='iter', desc=f"epoch {1}", ncols=140)
@@ -107,7 +110,7 @@ def main():
                 out[out <= THRESHOLD] = 0
                 val_img = torch.cat((mask.cpu(), out), dim=2)
                 utils.save_image(val_img, f'{log.project_name}/out/val_img_{steps}.png')
-        
+    log.step(1)
 
 if __name__ == '__main__':
     main()

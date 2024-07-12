@@ -130,6 +130,10 @@ class Training_Log():
             loss_log.write(f'\t{{gradient accumulation: {self.grad_accum}}}\n')
 
     def init_loss(self, **kwargs):
+        """
+        Args:
+            kwargs: {'train_losses': ['loss1', 'loss2', ...], 'test_losses': ['loss1', 'loss2', ...], 'val_losses': ['loss1', 'loss2', ...], 'metrics': ['loss1', 'loss2', ...]}
+        """
         support_type = ['train_losses', 'test_losses', 'val_losses', 'metrics']
         for loss_type, loss_name in kwargs.items():
             if loss_type not in support_type:
@@ -230,6 +234,7 @@ class Training_Log():
             net_weight (OrderedDict): The state_dict of the model.
             valid_value (Any): The value of the validation.
             img to save [train_img, test_img, val_img, result_img](torch.Tensor) shape: [batch, channel, height, width]
+            kwargs: {'train_img': torch.Tensor, 'test_img': torch.Tensor, 'val_img': torch.Tensor, 'result_img': torch.Tensor}
         """
         if self.step_mode == 'step' and epochs is not None:
             self.epochs = epochs
@@ -260,7 +265,7 @@ class Training_Log():
             if self.judgement(self.test_loss._total_loss, self.best) and self.epochs >= self.weight_start:
                 torch.save(net_weight, f"{self.WEIGHT_SAVE}/ck_{str(self.epochs).zfill(4)}{compiled}.pt")
 
-                if optimizer_state != None:
+                if optimizer_state is not None:
                     torch.save(optimizer_state, f"{self.WEIGHT_SAVE}/ck_{str(self.epochs).zfill(4)}{compiled}_optim.pt")
 
                 self.best = self.test_loss._total_loss
@@ -269,8 +274,8 @@ class Training_Log():
             torch.save(optimizer_state, f"{self.WEIGHT_SAVE}/ck_last{compiled}_optim.pt")
             
         elif self.save_weight and not self.warning:
-            if net_weight == None :
+            if net_weight is None :
                 print("\033[0;33m[WARNING] No weight saved. Please check your input model weight!\033[0m")
-            if optimizer_state == None:
+            if optimizer_state is None:
                 print("\033[0;33m[WARNING] No optimizer state_dict saved. Please check your input optimizer!\033[0m")
             self.warning = True

@@ -43,7 +43,7 @@ def main():
             print('[INFO] Model compile set to [False]')
 
     
-    trainset = Maks_Dataset(data_root=DATA_ROOT, split='train')
+    trainset = Maks_Dataset(data_root=DATA_ROOT, split='train_1')
     trainloader = DataLoader(trainset, batch_size=log.batch, shuffle=True, num_workers=log.num_workers)
     testset = Maks_Dataset(data_root=DATA_ROOT, split='test')
     testloader = DataLoader(testset, batch_size=24, shuffle=True, num_workers=log.num_workers)
@@ -86,7 +86,7 @@ def main():
 
     losses_name = ["total_loss", "mse", "kl", "bce", "ssim", "dice"]
     test_losses_name = ["total_loss", "mse", "bce", "ssim", "dice"]
-    log.init_loss(losses_name, test_losses_name)
+    log.init_loss(train_losses=losses_name, test_losses=test_losses_name)
 
     print('[INFO] Start training...')
     for eps in range(log.total_epochs):
@@ -145,7 +145,7 @@ def main():
                     str(f"{loss_str} "))
                 
                 save_img = torch.cat((label.cpu(), out.cpu().detach()), dim=2)
-        log.step(save_img, net.state_dict())
+        log.step(test_img=save_img, net_weight=net.state_dict())
 
 if __name__ == '__main__':
     main()

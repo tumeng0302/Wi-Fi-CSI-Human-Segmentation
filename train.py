@@ -1,13 +1,13 @@
 from torchmetrics.image import StructuralSimilarityIndexMeasure as SSIM
 from torchmetrics.classification import BinaryJaccardIndex
+from models.FullModel import FullModel
 from torch.cuda.amp import autocast, GradScaler
 from torch.utils.data import DataLoader
-from models.FullModel import FullModel
 from models.optimizer import Lion
 from Dataset import CSI_Dataset
 from models.VAE import Decoder
 from utils import Training_Log
-# from Loss import dice_loss
+from Loss import dice_loss
 from tqdm import tqdm
 from torch import nn
 import torch
@@ -58,17 +58,28 @@ def main():
                 print(f'[Warning] \"{name}\"<- parameter not in pre-trained weight!')
         print('[INFO] Model loaded successfully!')
         net_weight = None
+        decoder = None
     
-    print(f'[INFO] The following parameters is fixed:')
+    # net.encoder.requires_grad_(False)
+    net.decoder.requires_grad_(False)
+    print(f'[INFO] The following parameters is trainable:')
     for name, param in net.named_parameters():
-        if not param.requires_grad:
+        if param.requires_grad:
             print(f'\t{name}')
     
     print(f'[INFO] Total parameters: {sum(p.numel() for p in net.parameters())}')
+    print(f'[INFO] encoder parameters: {sum(p.numel() for p in net.encoder.parameters())}')
+    print(f'[INFO] aggregation parameters: {sum(p.numel() for p in net.aggr.parameters())}')
+    print(f'[INFO] fc_mu parameters: {sum(p.numel() for p in net.fc_mu.parameters())}')
+    print(f'[INFO] fc_var parameters: {sum(p.numel() for p in net.fc_var.parameters())}')
+    print(f'[INFO] fc parameters: {sum(p.numel() for p in net.fc.parameters())}')
+    # print(f'[INFO] adapter_1 parameters: {sum(p.numel() for p in net.adapter_1.parameters())}')
+    # print(f'[INFO] adapter_2 parameters: {sum(p.numel() for p in net.adapter_2.parameters())}')
+    print(f'[INFO] decoder parameters: {sum(p.numel() for p in net.decoder.parameters())}')
     print(f'[INFO] Trainable parameters: {sum(p.numel() for p in net.parameters() if p.requires_grad)}')
     
     # <--------------------------------------Load Dataset-------------------------------------->
-    trainset = CSI_Dataset(data_root=DATA_ROOT, split='train', interpolation=0.5)
+    trainset = CSI_Dataset(data_root=DATA_ROOT, split='train_1', interpolation=0.5, reverse=0.5)
     trainloader = DataLoader(trainset, batch_size=log.batch, shuffle=True, num_workers=log.num_workers)
     testset = CSI_Dataset(data_root=DATA_ROOT, split='test')
     testloader = DataLoader(testset, batch_size=24, shuffle=True, num_workers=log.num_workers)
@@ -88,7 +99,7 @@ def main():
         optimizer = torch.optim.SGD(net.parameters(), lr=log.lr, momentum=0.9, weight_decay=1e-5)
 
     scaler = GradScaler()
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[10, 15], gamma=0.7)
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[5, 10, 15], gamma=0.7)
 
     # <--------------------------------------Loss Function-------------------------------------->
     def kl_div(mu:torch.Tensor, logvar:torch.Tensor):
@@ -97,15 +108,15 @@ def main():
     ssim = SSIM(data_range=(0., 1.)).to(device)
     mse = nn.MSELoss()
     cosine = nn.CosineEmbeddingLoss(margin=0.1)
-    IoU = BinaryJaccardIndex(threshold=0.5).to(device)
+    IoU = BinaryJaccardIndex(threshold=0.3).to(device)
     
     Wcos = 50
     Wmse = 40
     Wbce = 10
-    WIoU = 3
-    train_losses = ["total_loss", "cos", "mse", "bce", "IoU_L", "ssim", "kl"]
-    test_losses = ["total_loss", "mse", "bce", "ssim", "IoU_L"]
-    metrics = ["total_loss", "mse", "ssim", "IoU"]
+    Wdice = 3
+    train_losses = ["total_loss", "cos", "mse", "bce", "dice", "ssim", "kl"]
+    test_losses = ["total_loss", "mse", "bce", "ssim", "dice"]
+    metrics = ["IoU", "mse", "ssim"]
     log.init_loss(train_losses = train_losses, test_losses = test_losses, metrics = metrics)
 
     def train_loss(out: torch.Tensor, mask: torch.Tensor, mu: torch.Tensor, logvar: torch.Tensor)->torch.Tensor:
@@ -114,10 +125,11 @@ def main():
         bce_loss = bce(out, mask) * Wbce
         ssim_loss = -ssim(torch.sigmoid(out).float(), mask.float())
         kl_loss = kl_div(mu, logvar) * 100
-        IoU_loss = (1 - IoU(torch.sigmoid(out).float(), mask.long())) * WIoU
-        loss = mse_loss + bce_loss + ssim_loss + kl_loss + IoU_loss
+        dice_ = dice_loss(torch.sigmoid(out).squeeze(1), mask.squeeze(1)) * Wdice
 
-        return loss, mse_loss, bce_loss, ssim_loss, kl_loss, IoU_loss
+        loss = mse_loss + kl_loss + dice_ + bce_loss + ssim_loss
+
+        return loss, mse_loss, bce_loss, ssim_loss, kl_loss, dice_
     
     def feature_loss(features, label)->torch.Tensor:
         cos_loss = 0
@@ -131,16 +143,15 @@ def main():
         mse_loss = mse(torch.sigmoid(out), mask) * Wmse
         bce_loss = bce(out, mask) * Wbce
         ssim_loss = -ssim(torch.sigmoid(out).float(), mask.float())
-        IoU_loss = (1 - IoU(torch.sigmoid(out).float(), mask.long())) * WIoU
-        loss = mse_loss + bce_loss + ssim_loss + IoU_loss
-        return loss, mse_loss, bce_loss, ssim_loss, IoU_loss
+        dice_ = dice_loss(torch.sigmoid(out).squeeze(1), mask.squeeze(1)) * Wdice
+        loss = mse_loss + dice_ + bce_loss + ssim_loss
+        return loss, mse_loss, bce_loss, ssim_loss, dice_
     
     def metrics_loss(out, mask)->torch.Tensor:
         mse_loss = mse(torch.sigmoid(out), mask)
         ssim_loss = ssim(torch.sigmoid(out).float(), mask.float())
         IoU_loss = IoU(torch.sigmoid(out).float(), mask.long())
-        loss = mse_loss - ssim_loss - IoU_loss
-        return loss, mse_loss, ssim_loss, IoU_loss
+        return IoU_loss, mse_loss, ssim_loss
     
 
     # <--------------------------------------Other-------------------------------------->
@@ -167,16 +178,16 @@ def main():
                 if log.auto_cast:
                     with autocast():
                         out, mu, logvar, amp_channel, pha_channel = net(amplitude, phase, src_mask)
-                        loss, mse_loss, bce_loss, ssim_loss, kl_loss, IoU_loss = train_loss(out, mask, mu, logvar)
+                        loss, mse_loss, bce_loss, ssim_loss, kl_loss, dice_ = train_loss(out, mask, mu, logvar)
                         total_loss = total_loss + loss
                         
                 else:
                     out, mu, logvar, amp_channel, pha_channel = net(amplitude, phase, src_mask)
-                    loss, mse_loss, bce_loss, ssim_loss, kl_loss, IoU_loss = train_loss(out, mask, mu, logvar)
+                    loss, mse_loss, bce_loss, ssim_loss, kl_loss, dice_ = train_loss(out, mask, mu, logvar)
                     total_loss = total_loss + loss
 
                 amplitude, phase, src_mask = None, None, None
-                features.append([amp_channel, pha_channel])
+                features.append((amp_channel, pha_channel))
             
             if log.auto_cast:
                 with autocast():
@@ -204,7 +215,7 @@ def main():
                 cos_loss.item(),
                 mse_loss.item(),
                 bce_loss.item(),
-                IoU_loss.item(),
+                dice_.item(),
                 -ssim_loss.item(),
                 kl_loss.item(),
 
@@ -221,14 +232,14 @@ def main():
                     for amplitude, phase, mask in t_bar:
                         amplitude, phase, mask = amplitude.to(device), phase.to(device), mask.to(device)
                         out, _, _, _, _ = net(amplitude, phase)
-                        loss, mse_loss, bce_loss, ssim_loss, IoU_loss = test_loss(out, mask)
+                        loss, mse_loss, bce_loss, ssim_loss, dice_ = test_loss(out, mask)
                         
                         log.test_loss.push_loss([
                             loss.item(),
                             mse_loss.item(),
                             bce_loss.item(),
                             -ssim_loss.item(),
-                            IoU_loss.item(),
+                            dice_.item(),
                         ])
                         loss_str = log.test_loss.avg_loss()
                         t_bar.set_postfix_str(str(f"{loss_str} "))
@@ -241,13 +252,12 @@ def main():
                     for amplitude, phase, mask in v_bar:
                         amplitude, phase, mask = amplitude.to(device), phase.to(device), mask.to(device)
                         out, _, _, _, _ = net(amplitude, phase)
-                        loss, mse_loss, ssim_loss, IoU_loss = metrics_loss(out, mask)
+                        IoU_loss, mse_loss, ssim_loss = metrics_loss(out, mask)
                         
                         log.metrics.push_loss([
-                            loss.item(),
+                            IoU_loss.item(),
                             mse_loss.item(),
                             ssim_loss.item(),
-                            IoU_loss.item(),
                         ])
                         loss_str = log.metrics.avg_loss()
                         v_bar.set_postfix_str(str(f"{loss_str} "))
