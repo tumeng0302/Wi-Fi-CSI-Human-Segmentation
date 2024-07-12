@@ -236,7 +236,28 @@ class MultiScale_Convolution_Block(nn.Module):
         else:
             out = self.l_norm(inputs + self._msc_forward(inputs.transpose(1, 2)))
         return out
+
+class Adapter_Block(nn.Module):
+    def __init__(self, in_length: int = 51, in_channels: int = 3072, 
+                 out_length: int = 12, out_channels: int = 1024, 
+                 activation: str = 'GELU', dropout: float = 0.1):
+        super(Adapter_Block, self).__init__()
+        self.in_proj = nn.Sequential(
+            nn.Linear(in_channels, out_channels),
+            nn.LayerNorm(out_channels),
+            Activation(activation),
+            nn.Dropout(dropout),
+        )
+        self.CA_block = Cross_Attn_Block(out_channels, 8, dropout=dropout)
+        self.ff_block = FF_Block(out_channels, 2048, dropout=dropout, activation=activation)
     
+    def forward(self, Q: torch.Tensor, amp: torch.Tensor, pha: torch.Tensor):
+        KV = torch.cat((amp, pha), dim=2)
+        KV = self.in_proj(KV)
+        Q = self.CA_block(Q, KV, KV)
+        Q = self.ff_block(Q)
+        return Q
+
 class CrossAggregationBlock(nn.Module):
     def __init__(self, 
                  in_length: int = 51, in_channels: int = 3072,
@@ -267,7 +288,7 @@ class CrossAggregationBlock(nn.Module):
         Q = self.out_container.unsqueeze(0).repeat(csi.size(0), 1, 1)
         Q = self.CA_block(Q, csi, csi)
         Q = self.ff_block(Q)
-        Q = Q.view(Q.size(0), -1)
+        Q = Q.transpose(1, 2).reshape(Q.size(0), -1)
         return Q
 
 class AggregationBlock(nn.Module):
