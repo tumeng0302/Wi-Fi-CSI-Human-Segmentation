@@ -18,7 +18,7 @@ class FullModel(nn.Module):
         print("[MODEL] Create Full Model")
         self.encoder = ERC_Transformer(**CONFIG['ERC_Transformer'])
         self.decoder = decoder
-        self.lat_shape = CONFIG['FullModel']['vae_latent_shape']
+        self.lat_shape = CONFIG['FullModel']['vae_latent_shape'] # [C, H, W]
         latent_dim = reduce(lambda x, y: x*y, self.lat_shape)
         self.fc_mu = nn.Linear(latent_dim, latent_dim)
         self.fc_var = nn.Linear(latent_dim, latent_dim)
@@ -28,7 +28,6 @@ class FullModel(nn.Module):
         else:
             self.aggr = AggregationBlock(**CONFIG['AggregationBlock'])
         # self.adapter_1 = Adapter_Block(**CONFIG['Adapter_Block'])
-        # self.adapter_2 = Adapter_Block(**CONFIG['Adapter_Block'])
 
     def reparameterize(self, mu, log_var):
         std = torch.exp(0.5*log_var)
@@ -45,10 +44,10 @@ class FullModel(nn.Module):
         log_var = self.fc_var(out)
         z = self.reparameterize(mu, log_var)
         z = self.fc(z)
-        z = z.reshape(-1, self.lat_shape[0], self.lat_shape[1]*self.lat_shape[2]).transpose(1, 2)
+        z = z.reshape(-1, self.lat_shape[0], self.lat_shape[1], self.lat_shape[2])
+        # z = z.reshape(-1, self.lat_shape[0], self.lat_shape[1]*self.lat_shape[2]).transpose(1, 2)
         # z = self.adapter_1(z, amp, pha)
-        # z = self.adapter_2(z, amp, pha)
-        z = z.transpose(1, 2).reshape(-1, self.lat_shape[0], self.lat_shape[1], self.lat_shape[2])
+        # z = z.transpose(1, 2).reshape(-1, self.lat_shape[0], self.lat_shape[1], self.lat_shape[2])
 
         out = self.decoder(z)
         
@@ -81,7 +80,7 @@ class FullModel_Finetune(nn.Module):
             self.aggr = AggregationBlock(**CONFIG['AggregationBlock'])
         self.adapter_1 = Adapter_Block(**CONFIG['Adapter_Block'])
 
-        self.factor = 16
+        self.factor = 32
         self.pix_unshuf = nn.PixelUnshuffle(self.factor)
         self.out_adapter = Adapter_Block(**CONFIG['Out_Adapter_Block'])
         self.pix_shuf = nn.PixelShuffle(self.factor)
@@ -119,9 +118,9 @@ class FullModel_Finetune(nn.Module):
         z = self.reparameterize(mu, log_var)
         z = self.fc(z)
         z = z.reshape(-1, self.lat_shape[0], self.lat_shape[1], self.lat_shape[2])
-        z = z.reshape(-1, self.lat_shape[0], self.lat_shape[1]*self.lat_shape[2]).transpose(1, 2)
-        z = self.adapter_1(z, amp, pha)
-        z = z.transpose(1, 2).reshape(-1, self.lat_shape[0], self.lat_shape[1], self.lat_shape[2])
+        # z = z.reshape(-1, self.lat_shape[0], self.lat_shape[1]*self.lat_shape[2]).transpose(1, 2)
+        # z = self.adapter_1(z, amp, pha)
+        # z = z.transpose(1, 2).reshape(-1, self.lat_shape[0], self.lat_shape[1], self.lat_shape[2])
         out = self.decoder(z)
         residual = out.clone()
         out = self.refine(out, amp, pha) + residual

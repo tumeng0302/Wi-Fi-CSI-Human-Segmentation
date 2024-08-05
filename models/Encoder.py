@@ -180,10 +180,11 @@ class ERC_Transformer(nn.Module):
         self.encoder = ERCFormerEncoder(encoder_layer, num_layers, return_channel_stream=return_channel_stream)
         self.return_channel_stream = return_channel_stream
         print("[MODEL] ERC_Transformer created. Number of layers: ", num_layers)
+        npy_num = 1
         if embedding_type == 'spatial_temporal':
-            self.embedding = Spacial_Temporal_Embedding(d_model_tem, [seq_len, RxTx_num, subcarrier_num])
+            self.embedding = Spacial_Temporal_Embedding(d_model_tem, [seq_len, RxTx_num, subcarrier_num], npy_num)
         elif embedding_type == 'gaussian_range':
-            self.embedding = Gaussian_Range_Embedding(d_model_tem, [seq_len, RxTx_num, subcarrier_num], gaussian_k)
+            self.embedding = Gaussian_Range_Embedding(d_model_tem, [seq_len, RxTx_num, subcarrier_num], gaussian_k, npy_num)
 
     def forward(self, amp:torch.Tensor, pha:torch.Tensor, src_mask:Optional[torch.Tensor]=None):
         amp, pha = self.embedding(amp, pha)

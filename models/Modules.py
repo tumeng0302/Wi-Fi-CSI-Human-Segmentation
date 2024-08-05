@@ -221,7 +221,7 @@ class MultiScale_Convolution_Block(nn.Module):
         weights = self.softmax(self.weight_FF(multiscale_features.transpose(-1, -2)).squeeze(-1))
         # weights.shape: [batch_size, seq_len, len(kernel_sizes)]
         out = torch.matmul(multiscale_features, weights.unsqueeze(-1)).squeeze(-1)
-        # matmul = [n, 51, 3072, 5] * [n, 51, 5, 1]
+        # matmul = [n, 51, 1536, 5] * [n, 51, 5, 1]  -> [n, 51, 1536]
         return out
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
@@ -264,27 +264,24 @@ class CrossAggregationBlock(nn.Module):
                  out_length: int = 12, out_channels: int = 1024,
                  activation: str = 'GELU', dropout: float = 0.1):
         super(CrossAggregationBlock, self).__init__()
-        self.amp_block = nn.Sequential(
-            nn.Linear(in_channels, out_channels//2),
-            nn.LayerNorm(out_channels//2),
+        self.in_proj = nn.Sequential(
+            nn.Linear(in_channels*2, out_channels),
+            nn.LayerNorm(out_channels),
             Activation(activation),
             nn.Dropout(dropout),
         )
-        self.pha_block = nn.Sequential(
-            nn.Linear(in_channels, out_channels//2),
-            nn.LayerNorm(out_channels//2),
-            Activation(activation),
-            nn.Dropout(dropout),
-        )
+        self.SA_block = Self_Attn_Block(out_channels, 8, dropout=dropout)
+        self.ff_in_block = FF_Block(out_channels, 2048, dropout=dropout, activation=activation)
         self.CA_block = Cross_Attn_Block(out_channels, 8, dropout=dropout)
         self.ff_block = FF_Block(out_channels, 2048, dropout=dropout, activation=activation)
         self.out_container = nn.Parameter(torch.empty(out_length, out_channels), requires_grad=True)
         nn.init.xavier_uniform_(self.out_container, gain=1.0)
     
     def forward(self, amp: torch.Tensor, pha: torch.Tensor):
-        amp = self.amp_block(amp)
-        pha = self.pha_block(pha)
         csi = torch.cat((amp, pha), dim=2)
+        csi = self.in_proj(csi)
+        csi = self.SA_block(csi)
+        csi = self.ff_in_block(csi)
         Q = self.out_container.unsqueeze(0).repeat(csi.size(0), 1, 1)
         Q = self.CA_block(Q, csi, csi)
         Q = self.ff_block(Q)
@@ -354,13 +351,25 @@ class ProjectionBlock(nn.Module):
             nn.LayerNorm(out_channels),
             Activation(activation),
             )
-        self.pool_3 = nn.AvgPool1d(3, 3, 0)
-        self.pool_5 = nn.AvgPool1d(5, 3, 1)
-        self.temporal_projection = nn.Sequential(
-            nn.Linear(in_length//3, in_length//3),
-            nn.LayerNorm(in_length//3),
-            Activation(activation),
-            )
+        
+        if self.in_length == 153:
+            self.pool_3 = nn.AvgPool1d(3, 3, 0)
+            self.pool_5 = nn.AvgPool1d(5, 3, 1)
+            self.temporal_projection = nn.Sequential(
+                nn.Linear(in_length//3, in_length//3),
+                nn.LayerNorm(in_length//3),
+                Activation(activation),
+                )
+            
+        elif self.in_length == 51:
+            self.pool_3 = nn.AvgPool1d(3, 1, 1)
+            self.pool_5 = nn.AvgPool1d(5, 1, 2)
+            self.temporal_projection = nn.Sequential(
+                nn.Linear(in_length, in_length),
+                nn.LayerNorm(in_length),
+                Activation(activation),
+                )
+            
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x: torch.Tensor):
@@ -368,18 +377,28 @@ class ProjectionBlock(nn.Module):
         x = self.channel_projection(x)
         x = x.view(-1, self.in_length, self.RxTx_num, self.out_channels)
 
-        x = x.permute(0, 3, 2, 1).contiguous()
-        x = x.view(-1, self.out_channels*self.RxTx_num, self.in_length)
-        x = (x[:, :, 1::3]*4 + self.pool_3(x)*2 + self.pool_5(x)*1)/7
-        x = self.temporal_projection(x)
-        x = x.view(-1, self.out_channels, self.RxTx_num, self.in_length//3)
-        x = x.permute(0, 3, 2, 1).contiguous()
-        x = x.view(-1, self.in_length//3, self.RxTx_num*self.out_channels)
+        if self.in_length == 51:
+            x = x.permute(0, 3, 2, 1).contiguous()
+            x = x.view(-1, self.out_channels*self.RxTx_num, self.in_length)
+            x = (x*4 + self.pool_3(x)*2 + self.pool_5(x)*1)/7
+            x = self.temporal_projection(x)
+            x = x.view(-1, self.out_channels, self.RxTx_num, self.in_length)
+            x = x.permute(0, 3, 2, 1).contiguous()
+            x = x.view(-1, self.in_length, self.RxTx_num*self.out_channels)
+
+        elif self.in_length == 153:
+            x = x.permute(0, 3, 2, 1).contiguous()
+            x = x.view(-1, self.out_channels*self.RxTx_num, self.in_length)
+            x = (x[:, :, 1::3]*4 + self.pool_3(x)*2 + self.pool_5(x)*1)/7
+            x = self.temporal_projection(x)
+            x = x.view(-1, self.out_channels, self.RxTx_num, self.in_length//3)
+            x = x.permute(0, 3, 2, 1).contiguous()
+            x = x.view(-1, self.in_length//3, self.RxTx_num*self.out_channels)
 
         return self.dropout(x)
         
 class Spacial_Temporal_Embedding(nn.Module):
-    def __init__(self, d_model: int, shape_input: List[int]):
+    def __init__(self, d_model: int, shape_input: List[int], npy_num: int = 3):
         """
         Args:
             d_model: int, embedding dimension
@@ -395,8 +414,8 @@ class Spacial_Temporal_Embedding(nn.Module):
         self.RxTx_num = shape_input[1]
         self.d_input = shape_input[2]
 
-        self.amp_projection = ProjectionBlock(self.length*3, self.RxTx_num, self.d_input, d_model//self.RxTx_num)
-        self.pha_projection = ProjectionBlock(self.length*3, self.RxTx_num, self.d_input, d_model//self.RxTx_num)
+        self.amp_projection = ProjectionBlock(self.length*npy_num, self.RxTx_num, self.d_input, d_model//self.RxTx_num)
+        self.pha_projection = ProjectionBlock(self.length*npy_num, self.RxTx_num, self.d_input, d_model//self.RxTx_num)
 
         self.amp_embedding = nn.Parameter(torch.randn(self.length*self.RxTx_num, d_model//self.RxTx_num), requires_grad=True)
         self.pha_embedding = nn.Parameter(torch.randn(self.length*self.RxTx_num, d_model//self.RxTx_num), requires_grad=True)
@@ -411,7 +430,7 @@ class Spacial_Temporal_Embedding(nn.Module):
         return amp, pha
     
 class Gaussian_Range_Embedding(nn.Module):
-    def __init__(self, d_model: int, shape_input: List[int], k: int = 10):
+    def __init__(self, d_model: int, shape_input: List[int], k: int = 10, npy_num: int = 3):
         """
         Args:
             d_model: int, embedding dimension
@@ -428,8 +447,8 @@ class Gaussian_Range_Embedding(nn.Module):
         self.d_input = shape_input[2]
         self.k = k
 
-        self.amp_projection = ProjectionBlock(self.length*3, self.RxTx_num, self.d_input, d_model//self.RxTx_num)
-        self.pha_projection = ProjectionBlock(self.length*3, self.RxTx_num, self.d_input, d_model//self.RxTx_num)
+        self.amp_projection = ProjectionBlock(self.length*npy_num, self.RxTx_num, self.d_input, d_model//self.RxTx_num)
+        self.pha_projection = ProjectionBlock(self.length*npy_num, self.RxTx_num, self.d_input, d_model//self.RxTx_num)
 
         self.amp_embedding = nn.init.xavier_uniform_(
             nn.Parameter(torch.empty(self.k, d_model), requires_grad=True),
