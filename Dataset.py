@@ -8,7 +8,7 @@ import torch
 import json
 
 def get_data_list(split: str, data_root: str, mode: str = 'merge'):
-    valid_type = ['train', 'train_1', 'train_2', 'train_3', 'val', 'test', 'occu', 'random']
+    valid_type = ['train', 'train_1', 'train_2', 'train_3', 'val', 'test', 'occu', 'random_1', 'random_2', 'random_3']
     if split not in valid_type:
         raise ValueError(f'Invalid split type: {split}, should be one of {valid_type}')
     
@@ -92,7 +92,8 @@ class CSI_Dataset(Dataset):
     def __init__(self, 
                  data_root: str, split: str = 'train', 
                  crop_size: tuple = (192, 256), interpolation: float = -1, reverse: float = -1,
-                 amp_offset: float = 60000, pha_offset: float = 28000):
+                 amp_offset: float = 60000, pha_offset: float = 28000,
+                 npy_num: int = 3):
         """
         Args:
             data_root: str, path to the dataset
@@ -127,6 +128,7 @@ class CSI_Dataset(Dataset):
         self.reverse = reverse
         self.amp_offset = amp_offset
         self.pha_offset = pha_offset
+        self.npy_num = npy_num
 
     def __len__(self):
         return len(self.data_list)
@@ -134,17 +136,25 @@ class CSI_Dataset(Dataset):
     def normalize(self, x: torch.Tensor, mean: float = 0, std: float = 0.5):
         return ((x - x.mean()) / x.std()) * std + mean
 
-    def get_data(self, mask_path, data_path, npy_path)->tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def get_data(self, mask_path, data_path, npy_path, npy_num=3)->tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         mask = Image.open(f'{self.data_root}/{mask_path}_mask.png').convert('L')
         mask = self.transform(mask).float()
-        amplist, phalist = [], []
-        for npy in npy_path:
-            data = np.load(f'{self.data_root}/{data_path}/{npy}.npz')
-            amplist.append(data['mag'].astype(np.float32)/self.amp_offset)
-            phalist.append(data['pha'].astype(np.float32)/self.pha_offset)
-        amp, pha = np.concatenate(amplist, axis=0), np.concatenate(phalist, axis=0)
-        amp, pha = torch.from_numpy(amp), torch.from_numpy(pha)
-        amp, pha = self.normalize(amp), self.normalize(pha)
+        if npy_num == 3:
+            amplist, phalist = [], []
+            for npy in npy_path:
+                data = np.load(f'{self.data_root}/{data_path}/{npy}.npz')
+                amplist.append(data['mag'].astype(np.float32)/self.amp_offset)
+                phalist.append(data['pha'].astype(np.float32)/self.pha_offset)
+            amp, pha = np.concatenate(amplist, axis=0), np.concatenate(phalist, axis=0)
+            amp, pha = torch.from_numpy(amp), torch.from_numpy(pha)
+            amp, pha = self.normalize(amp), self.normalize(pha)
+        
+        elif npy_num == 1:
+            data = np.load(f'{self.data_root}/{data_path}/{npy_path[1]}.npz')
+            amp, pha = data['mag'].astype(np.float32)/self.amp_offset, data['pha'].astype(np.float32)/self.pha_offset
+            amp, pha = torch.from_numpy(amp), torch.from_numpy(pha)
+            amp, pha = self.normalize(amp), self.normalize(pha)
+
         if self.split == 'train' and np.random.random() < self.interpolation:
             amp, pha = interpolation(amp, pha)
         if self.split == 'train' and np.random.random() < self.reverse:
@@ -156,7 +166,7 @@ class CSI_Dataset(Dataset):
         data_path = self.data_list[idx][0]
         env = data_path.split('/')[0]
         mask_path = data_path.replace('npy', 'img') + '/' + self.data_list[idx][2]
-        amp, pha, mask = self.get_data(mask_path, data_path, self.data_list[idx][1:])
+        amp, pha, mask = self.get_data(mask_path, data_path, self.data_list[idx][1:], self.npy_num)
         label = 0
 
         if 'train' in self.split:
@@ -164,7 +174,7 @@ class CSI_Dataset(Dataset):
                 idx = np.random.randint(len(self.data_struct[env]))
                 data_path2 = self.data_struct[env][idx]
                 mask_path2 = data_path2[0].replace('npy', 'img') + '/' + data_path2[2]
-                amp2, pha2, mask2 = self.get_data(mask_path2, data_path2[0], data_path2[1:])
+                amp2, pha2, mask2 = self.get_data(mask_path2, data_path2[0], data_path2[1:], self.npy_num)
                 label = 1
 
             if choose >= 0.5:
@@ -174,7 +184,7 @@ class CSI_Dataset(Dataset):
                 idx = np.random.randint(len(data_struct[env2]))
                 data_path2 = data_struct[env2][idx]
                 mask_path2 = data_path2[0].replace('npy', 'img') + '/' + data_path2[2]
-                amp2, pha2, mask2 = self.get_data(mask_path2, data_path2[0], data_path2[1:])
+                amp2, pha2, mask2 = self.get_data(mask_path2, data_path2[0], data_path2[1:], self.npy_num)
                 label = -1
             
             return [[amp, pha, mask], [amp2, pha2, mask2]], torch.tensor(label)
@@ -186,7 +196,8 @@ class CSI_Dataset_Finetune(Dataset):
     def __init__(self, 
                  data_root: str, split: str = 'train', 
                  crop_size: tuple = (192, 256),
-                 amp_offset: float = 60000, pha_offset: float = 28000):
+                 amp_offset: float = 60000, pha_offset: float = 28000,
+                 npy_num: int = 3):
         """
         Args:
             data_root: str, path to the dataset
@@ -210,6 +221,7 @@ class CSI_Dataset_Finetune(Dataset):
         ])
         self.amp_offset = amp_offset
         self.pha_offset = pha_offset
+        self.npy_num = npy_num
 
     def __len__(self):
         return len(self.data_list)
@@ -217,24 +229,30 @@ class CSI_Dataset_Finetune(Dataset):
     def normalize(self, x: torch.Tensor, mean: float = 0, std: float = 0.5):
         return ((x - x.mean()) / x.std()) * std + mean
 
-    def get_data(self, mask_path, data_path, npy_path)->tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def get_data(self, mask_path, data_path, npy_path, npy_num=3)->tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         mask = Image.open(f'{self.data_root}/{mask_path}_mask.png').convert('L')
         mask = self.transform(mask).float()
-        amplist, phalist = [], []
-        for npy in npy_path:
-            data = np.load(f'{self.data_root}/{data_path}/{npy}.npz')
-            amplist.append(data['mag'].astype(np.float32)/self.amp_offset)
-            phalist.append(data['pha'].astype(np.float32)/self.pha_offset)
-        amp, pha = np.concatenate(amplist, axis=0), np.concatenate(phalist, axis=0)
-        amp, pha = torch.from_numpy(amp), torch.from_numpy(pha)
-        amp, pha = self.normalize(amp), self.normalize(pha)
+        if npy_num == 3:
+            amplist, phalist = [], []
+            for npy in npy_path:
+                data = np.load(f'{self.data_root}/{data_path}/{npy}.npz')
+                amplist.append(data['mag'].astype(np.float32)/self.amp_offset)
+                phalist.append(data['pha'].astype(np.float32)/self.pha_offset)
+            amp, pha = np.concatenate(amplist, axis=0), np.concatenate(phalist, axis=0)
+            amp, pha = torch.from_numpy(amp), torch.from_numpy(pha)
+            amp, pha = self.normalize(amp), self.normalize(pha)
+
+        elif npy_num == 1:
+            data = np.load(f'{self.data_root}/{data_path}/{npy_path[1]}.npz')
+            amp, pha = data['mag'].astype(np.float32)/self.amp_offset, data['pha'].astype(np.float32)/self.pha_offset
+            amp, pha = torch.from_numpy(amp), torch.from_numpy(pha)
+            amp, pha = self.normalize(amp), self.normalize(pha)
+
         return amp, pha, mask
 
     def __getitem__(self, idx):
-        choose = np.random.random()
         data_path = self.data_list[idx][0]
-        env = data_path.split('/')[0]
         mask_path = data_path.replace('npy', 'img') + '/' + self.data_list[idx][2]
-        amp, pha, mask = self.get_data(mask_path, data_path, self.data_list[idx][1:])
+        amp, pha, mask = self.get_data(mask_path, data_path, self.data_list[idx][1:], self.npy_num)
 
         return amp, pha, mask
