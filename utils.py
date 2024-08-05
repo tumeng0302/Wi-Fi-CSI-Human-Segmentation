@@ -164,6 +164,7 @@ class Training_Log():
         parser.add_argument('-O', '--optimizer', type=str, default='SGD', help='optimizer')
         parser.add_argument('-R', '--resume', type=str, help="reload model from given path", default=None)
         parser.add_argument('-GA', '--grad-accum', type=int, default=1, help='gradient accumulation steps, set to 1 to disable')
+        parser.add_argument('-N', '--npy-num', help='set number of input numpy file number', type=int, default=3)
         args = parser.parse_args()
         self.decoder_weight = args.decoder_weight
         self.gpu = args.gpu
@@ -177,6 +178,7 @@ class Training_Log():
         self.optimizer = args.optimizer
         self.resume = args.resume
         self.grad_accum = args.grad_accum
+        self.npy_num = args.npy_num
 
     def loss_txt_log(self):
         self.steps_stone.append(self.train_loss.steps)
