@@ -3,7 +3,7 @@ from torchmetrics.classification import BinaryJaccardIndex
 from torch.cuda.amp import autocast, GradScaler
 from Dataset import CSI_Dataset_Finetune
 from torch.utils.data import DataLoader
-from models.FullModel import FullModel_Finetune
+from models.FullModel import FullModel
 from models.optimizer import Lion
 from models.VAE import Decoder
 from utils import Training_Log
@@ -29,7 +29,9 @@ def main():
     # <--------------------------------------Create transformer model-------------------------------------->
     with open('./model_config.yaml', 'r') as f:
         config = yaml.load(f, Loader=yaml.CLoader)
-    net = FullModel_Finetune(config, decoder).to(device)
+    net = FullModel(config, decoder).to(device)
+    net.encoder.return_channel_stream = False
+    net.encoder.encoder.return_channel_stream = False
     if log.compile:
         net = torch.compile(net).to(device)
 
@@ -44,22 +46,19 @@ def main():
                 print(f'[WARNING] {name} not found in checkpoint!')
 
         print('[INFO] Model loaded successfully!')
-    
 
-    
-
-    # net.encoder.requires_grad_(False)
-    # print(f'[INFO] Encoder parameters has been freezed!')
-    net.decoder.requires_grad_(False)
-    print(f'[INFO] Decoder parameters has been freezed!')
+    net.encoder.requires_grad_(False)
+    print(f'[INFO] Encoder parameters has been freezed!')
+    # net.decoder.requires_grad_(False)
+    # print(f'[INFO] Decoder parameters has been freezed!')
     print(f'[INFO] Total parameters: {sum(p.numel() for p in net.parameters())}')
     print(f'[INFO] Trainable parameters: {sum(p.numel() for p in net.parameters() if p.requires_grad)}')
     # <--------------------------------------Load Dataset-------------------------------------->
-    trainset = CSI_Dataset_Finetune(data_root=DATA_ROOT, split='train_1')
+    trainset = CSI_Dataset_Finetune(data_root=DATA_ROOT, split='train_1', npy_num=log.npy_num)
     trainloader = DataLoader(trainset, batch_size=log.batch, shuffle=True, num_workers=log.num_workers)
-    testset = CSI_Dataset_Finetune(data_root=DATA_ROOT, split='test')
+    testset = CSI_Dataset_Finetune(data_root=DATA_ROOT, split='test', npy_num=log.npy_num)
     testloader = DataLoader(testset, batch_size=24, shuffle=True, num_workers=log.num_workers)
-    valset = CSI_Dataset_Finetune(data_root=DATA_ROOT, split='val')
+    valset = CSI_Dataset_Finetune(data_root=DATA_ROOT, split='val', npy_num=log.npy_num)
     valloader = DataLoader(valset, batch_size=23, shuffle=True, num_workers=log.num_workers)
 
     # <--------------------------------------Optimizer-------------------------------------->
@@ -72,10 +71,10 @@ def main():
     elif log.optimizer == 'lion':
         optimizer = Lion(net.parameters(), lr=log.lr, betas=(0.9, 0.99))
     else:
-        optimizer = torch.optim.SGD(net.parameters(), lr=log.lr, momentum=0.9, weight_decay=1e-5)
+        optimizer = torch.optim.SGD(net.parameters(), lr=log.lr, momentum=0.75, weight_decay=1e-5)
 
     scaler = GradScaler()
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[3, 10, 15], gamma=0.5)
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[2,4,6,8], gamma=0.5)
 
     # <--------------------------------------Loss Function-------------------------------------->
     def kl_div(mu:torch.Tensor, logvar:torch.Tensor):
@@ -170,7 +169,7 @@ def main():
             loss_str = log.train_loss.avg_loss()
             i_bar.set_postfix_str(str(f"{loss_str}"))
             
-            if steps % 1500 == 0 and steps != 0:
+            if steps % 500 == 0 and steps != 0:
                 train_img = torch.cat((mask.cpu(), torch.sigmoid(out).cpu().detach()), dim=2)
                 # ---------------------------testing---------------------------#
                 net.eval()

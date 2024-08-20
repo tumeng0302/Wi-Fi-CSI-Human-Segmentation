@@ -136,17 +136,44 @@ class Mix_Attn_Block(nn.Module):
 class Rev_Attn_Block(nn.Module):
     def __init__(self, 
                  d_model: int, dim_feedforward: int,
-                 dropout: float = 0.1, activation: str = 'leakyrelu'):
+                 dropout: float = 0.1, activation: str = 'leakyrelu',
+                 use_reverse: bool = True):
         super(Rev_Attn_Block, self).__init__()
         self.amp_sigmoid = nn.Sigmoid()
         self.pha_sigmoid = nn.Sigmoid()
         self.amp_ff = FF_Block(d_model, dim_feedforward, dropout, activation)
         self.pha_ff = FF_Block(d_model, dim_feedforward, dropout, activation)
+        self.amp_contrasive_linear = nn.Sequential(
+            nn.Linear(d_model, d_model//2),
+            nn.LayerNorm(d_model//2),
+            Activation(activation),
+            nn.Linear(d_model//2, d_model//4),
+        )
+        self.pha_contrasive_linear = nn.Sequential(
+            nn.Linear(d_model, d_model//2),
+            nn.LayerNorm(d_model//2),
+            Activation(activation),
+            nn.Linear(d_model//2, d_model//4),
+        )
+        self.use_reverse = use_reverse
+        self.infer_mode = False
 
     def forward(self, amp:torch.Tensor, pha:torch.Tensor, src_amp:torch.Tensor, src_pha:torch.Tensor):
-        amp = self.amp_ff(src_amp * self.amp_sigmoid(-amp))
-        pha = self.pha_ff(src_pha * self.pha_sigmoid(-pha))
-        return amp, pha
+        if self.use_reverse:
+            rev_amp = src_amp * self.amp_sigmoid(-amp)
+            rev_pha = src_pha * self.pha_sigmoid(-pha)
+            amp = self.amp_ff(rev_amp)
+            pha = self.pha_ff(rev_pha)
+            if not self.infer_mode:
+                rev_amp = self.amp_contrasive_linear(rev_amp)
+                rev_pha = self.pha_contrasive_linear(rev_pha)
+        else:
+            rev_amp = None
+            rev_pha = None
+            amp = self.amp_ff(amp)
+            pha = self.pha_ff(pha)
+            
+        return amp, pha, rev_amp, rev_pha
 
 class FF_Block(nn.Module):
     def __init__(self, 

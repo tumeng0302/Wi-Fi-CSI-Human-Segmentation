@@ -21,7 +21,9 @@ ERC_Transformer:
   return_channel_stream: True
   gaussian_k: 12
   use_mix_attn: True
-
+  npy_num: 1
+  use_reverse: True
+  
 AggregationBlock:
   in_length: 51
   in_channels: 1536
@@ -51,6 +53,6 @@ Out_Adapter_Block:
   in_length: 51
   in_channels: 3072
   out_length: 48
-  out_channels: 256
+  out_channels: 1024
   activation: 'gelu'
   dropout: 0.1
