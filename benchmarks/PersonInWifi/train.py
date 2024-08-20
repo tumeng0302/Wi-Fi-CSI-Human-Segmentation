@@ -9,6 +9,7 @@ import argparse
 import pyopenpose as op
 from torchvision import transforms
 import os
+import sys
 
 from data.dataset import PersonInWifiDataset
 from models import PIF
@@ -27,6 +28,10 @@ def argparser():
     parser.add_argument('--skeleton_model', type=str, default='/root/openpose/models', help='Path to the openpose library')
     # metric
     parser.add_argument('--threshold', type=float, default=0.3, help='Threshold for binary segmentation')
+    # resume or test
+    parser.add_argument('--ckpt_path', help='Path to the checkpoint file to resume training or testing', required='--resume' in sys.argv or '--test' in sys.argv)
+    parser.add_argument('--resume', action='store_true', help='Resume training')
+    parser.add_argument('--test', action='store_true', help='Test the model')
     args = parser.parse_args()
     return args
 
@@ -141,10 +146,24 @@ class LitModel(pl.LightningModule):
 
 
     def test_step(self, batch, batch_idx):
-        x, y = batch
-        logits = self(x)
-        loss = nn.CrossEntropyLoss()(logits, y)
-        self.log('test_loss', loss)
+        amp, pha, mask_gt, img_gt = batch
+
+        # generate JHM and PAF of skeleton
+        jhm_gt, paf_gt = self.generate_skeleton(img_gt)
+        jhm_gt = jhm_gt.type_as(mask_gt)
+        paf_gt = paf_gt.type_as(mask_gt)
+
+        # model
+        sm, jhm, paf = self.model(amp)
+
+        # metric
+        # IoU bewtween mask_gt and sm
+        iou = self.iou(sm, mask_gt.long())
+        self.log('test_iou', iou)
+
+        # log image
+        self.logger.experiment.add_images('test-mask-gt', mask_gt[0:1], batch_idx)
+        self.logger.experiment.add_images('test-mask', sm[0:1], batch_idx)
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.model.parameters(), lr=0.001)
@@ -158,25 +177,31 @@ tb_logger = pl_loggers.TensorBoardLogger(
     name='lightning_logs'
 )
 # Data
-# Create datasets
-train_dataset = PersonInWifiDataset(data_root=args.data_root, split='train')
-val_dataset = PersonInWifiDataset(data_root=args.data_root, split='val')
-# test_dataset = PersonInWifiDataset(data_root=args.data_root, split='test')
 
-# Create dataloaders
-train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=8)
-val_loader = DataLoader(val_dataset, batch_size=args.batch_size, num_workers=8)
-# test_loader = DataLoader(test_dataset, batch_size=args.batch_size)
-
-# Training
 model = LitModel()
+
+# trainer = pl.Trainer(fast_dev_run=True, accelerator='gpu', devices=[1])
 trainer = pl.Trainer(max_epochs=10,
                      val_check_interval=10000, limit_val_batches=0.25,
                      strategy=DDPStrategy(find_unused_parameters=True),
-                     callbacks=pl.callbacks.ModelCheckpoint(every_n_train_steps=10000, save_top_k=-1))
-# trainer = pl.Trainer(max_epochs=10, strategy=DDPStrategy(find_unused_parameters=True))  # Set max_epochs and gpus as per your requirements
-# trainer = pl.Trainer(fast_dev_run=True, accelerator='gpu', devices=[1])
-trainer.fit(model, train_loader, val_loader)
+                     callbacks=pl.callbacks.ModelCheckpoint(every_n_train_steps=10000, save_top_k=-1),
+                     logger=tb_logger)
 
-# Testing
-# trainer.test(model, test_loader)
+if args.test:
+    # Testing
+    test_dataset = PersonInWifiDataset(data_root=args.data_root, split='random_1')
+    test_loader = DataLoader(test_dataset, batch_size=args.batch_size)
+    trainer.test(model, test_loader, ckpt_path=args.ckpt_path)
+else:
+    # Training
+    # Create datasets
+    train_dataset = PersonInWifiDataset(data_root=args.data_root, split='train_1')
+    val_dataset = PersonInWifiDataset(data_root=args.data_root, split='val')
+    # Create dataloaders
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=8)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, num_workers=8)
+
+    if not args.resume:
+        args.ckpt_path = None
+
+    trainer.fit(model, train_loader, val_loader, ckpt_path=args.ckpt_path)
