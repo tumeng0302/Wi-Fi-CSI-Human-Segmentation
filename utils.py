@@ -152,7 +152,7 @@ class Training_Log():
     def arg_parse(self, model_name='My_Model'):
         parser = ArgumentParser()
         random_name = time.strftime(f"%Y%m%d_%H%M%S", time.localtime()) 
-        parser.add_argument('-DW', '--decoder-weight', type=str, default='./model_weights/ck_VAE_1024_E0164_compiled.pt', help='decoder weight path')
+        parser.add_argument('-DW', '--decoder-weight', type=str, default=None, help='decoder weight path')
         parser.add_argument('--gpu', type=int, default=0, help='gpu id')
         parser.add_argument('-B', '--batch', type=int, default=64, help='batch size')
         parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')

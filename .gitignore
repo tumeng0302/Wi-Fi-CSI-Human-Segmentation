@@ -7,3 +7,4 @@ sample_data/
 __pycache__/
 */__pycache__/
 .gitignore
+benchmarks/PersonInWifi/lightning_logs

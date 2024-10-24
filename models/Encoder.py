@@ -49,10 +49,12 @@ class ChannelStream(nn.Module):
     def __init__(self, 
                  d_model: int, n_heads: int, kernel_sizes: List[int], dim_feedforward: int = 2048,
                  dropout: float = 0.1, activation: str = 'gelu',
-                 use_mix_attn: bool = False) -> None:
+                 use_mix_attn: bool = False,
+                 use_reverse: bool = True) -> None:
         super(ChannelStream, self).__init__()
         print("[MODEL] Create ChannelStream")
         print(f"\tChannelStream info -> attn_type: {'Mix' if use_mix_attn else 'Cross'} Attention")
+        print(f"\tChannelStream info -> reverse_attention: {use_reverse}")
         print(f"\tChannelStream info -> <d_model:{d_model}, n_heads:{n_heads}, kernel_sizes:{kernel_sizes}>")
         print(f"\tChannelStream info -> <dim_feedforward:{dim_feedforward}, dropout:{dropout}, activation:{activation}>")
         self.use_mix_attn = use_mix_attn
@@ -64,7 +66,7 @@ class ChannelStream(nn.Module):
 
         self.amp_msc = MultiScale_Convolution_Block(d_model, kernel_sizes, dim_feedforward, dropout, activation)
         self.pha_msc = MultiScale_Convolution_Block(d_model, kernel_sizes, dim_feedforward, dropout, activation)
-        self.rev_att = Rev_Attn_Block(d_model, dim_feedforward, dropout, activation)
+        self.rev_att = Rev_Attn_Block(d_model, dim_feedforward, dropout, activation, use_reverse)
     
     def _channel_block(self, amp, pha):
         if not self.use_mix_attn:
@@ -75,14 +77,14 @@ class ChannelStream(nn.Module):
             amp_msc = self.amp_msc(amp_ma)
             pha_msc = self.pha_msc(pha_ma)
 
-        amp, pha = self.rev_att(amp_msc, pha_msc, amp, pha)
+        amp, pha, rev_amp, rev_pha = self.rev_att(amp_msc, pha_msc, amp, pha)
 
-        return amp, pha
+        return amp, pha, rev_amp, rev_pha
     
     def forward(self, amp, pha):
-        amp, pha = self._channel_block(amp, pha)
+        amp, pha, rev_amp, rev_pha = self._channel_block(amp, pha)
         
-        return amp, pha
+        return amp, pha, rev_amp, rev_pha
 
 class ERCFormerEncoderLayer(nn.Module):
     def __init__(self, 
@@ -91,14 +93,15 @@ class ERCFormerEncoderLayer(nn.Module):
                  n_heads_tem: int, n_heads_cha: int,
                  dim_feedforward_tem: int, dim_feedforward_cha: int,
                  kernel_sizes: List[int], dropout: float = 0.1, activation: str = 'gelu', norm_first: bool = True,
-                 use_mix_attn: bool = False) -> None:
+                 use_mix_attn: bool = False,
+                 use_reverse: bool = True) -> None:
         super(ERCFormerEncoderLayer, self).__init__()
         self.norm_first = norm_first
         self.RxTx_num = RxTx_num
         self.amp_sa = Self_Attn_Block(d_model_tem, n_heads_tem, dropout)
         self.pha_sa = Self_Attn_Block(d_model_tem, n_heads_tem, dropout)
         self.temporal_stream = TemporalStream(d_model_tem, n_heads_tem, kernel_sizes, dim_feedforward_tem, dropout, activation, use_mix_attn)
-        self.channel_stream = ChannelStream(d_model_cha, n_heads_cha, kernel_sizes, dim_feedforward_cha, dropout, activation, use_mix_attn)
+        self.channel_stream = ChannelStream(d_model_cha, n_heads_cha, kernel_sizes, dim_feedforward_cha, dropout, activation, use_mix_attn, use_reverse)
         self.amp_norm = nn.LayerNorm(d_model_tem)
         self.pha_norm = nn.LayerNorm(d_model_tem)
 
@@ -115,7 +118,7 @@ class ERCFormerEncoderLayer(nn.Module):
         amp_cha = amp.clone().view(amp_shape[0], amp_shape[1]*self.RxTx_num, amp_shape[2]//self.RxTx_num).transpose(1, 2)
         pha_cha = pha.clone().view(pha_shape[0], pha_shape[1]*self.RxTx_num, pha_shape[2]//self.RxTx_num).transpose(1, 2)
         amp, pha = self.temporal_stream(amp, pha)
-        amp_cha, pha_cha = self.channel_stream(amp_cha, pha_cha)
+        amp_cha, pha_cha, rev_amp, rev_pha = self.channel_stream(amp_cha, pha_cha)
         amp_cha = amp_cha.transpose(1, 2).reshape(amp_shape)
         pha_cha = pha_cha.transpose(1, 2).reshape(pha_shape)
 
@@ -127,8 +130,9 @@ class ERCFormerEncoderLayer(nn.Module):
             pha = self.pha_norm(pha + pha_cha)
 
         if return_channel_stream:
-            return amp, pha, amp_cha, pha_cha
+            return amp, pha, rev_amp, rev_pha
         else:
+            rev_amp, rev_pha = None, None
             return amp, pha
 
 class ERCFormerEncoder(nn.Module):
@@ -147,11 +151,15 @@ class ERCFormerEncoder(nn.Module):
             pha (Tensor): Phase data, Shape: [batch, frame_num(51), d_model_tem(3072)]
 
         """
+        amp_cha, pha_cha = None, None
         for encoder_layer in self.encoder_layers:
             if not self.return_channel_stream:
                 amp, pha = encoder_layer(amp, pha, return_channel_stream=False, src_mask=src_mask)
             else:
-                amp, pha, amp_cha, pha_cha = encoder_layer(amp, pha, return_channel_stream=True, src_mask=src_mask)
+                if amp_cha is None:
+                    amp, pha, amp_cha, pha_cha = encoder_layer(amp, pha, return_channel_stream=True, src_mask=src_mask)
+                else:
+                    amp, pha, _, _ = encoder_layer(amp, pha, return_channel_stream=True, src_mask=src_mask)
 
         if self.return_channel_stream:
             return amp, pha, amp_cha, pha_cha
@@ -171,16 +179,18 @@ class ERC_Transformer(nn.Module):
                  num_layers: int = 4,
                  dropout: float = 0.1, activation: str = 'gelu', norm_first: bool = True, return_channel_stream: bool = True,
                  gaussian_k: int = 12,
-                 use_mix_attn: bool = False) -> None:
+                 use_mix_attn: bool = False,
+                 npy_num: int = 3,
+                 use_reverse: bool = True) -> None:
         super(ERC_Transformer, self).__init__()
         print("[MODEL] Create ERC_Transformer...")
         encoder_layer = ERCFormerEncoderLayer(RxTx_num, d_model_tem, d_model_cha, n_heads_tem, n_heads_cha,
                                               dim_feedforward_tem, dim_feedforward_cha, 
-                                              kernel_sizes, dropout, activation, norm_first, use_mix_attn)
+                                              kernel_sizes, dropout, activation, norm_first, use_mix_attn, use_reverse)
         self.encoder = ERCFormerEncoder(encoder_layer, num_layers, return_channel_stream=return_channel_stream)
         self.return_channel_stream = return_channel_stream
         print("[MODEL] ERC_Transformer created. Number of layers: ", num_layers)
-        npy_num = 1
+
         if embedding_type == 'spatial_temporal':
             self.embedding = Spacial_Temporal_Embedding(d_model_tem, [seq_len, RxTx_num, subcarrier_num], npy_num)
         elif embedding_type == 'gaussian_range':
@@ -194,3 +204,11 @@ class ERC_Transformer(nn.Module):
         else:
             amp, pha = self.encoder(amp, pha, src_mask=src_mask)
             return amp, pha
+        
+    def infer_mode(self):
+        layer: ERCFormerEncoderLayer = None
+        for layer in self.encoder.encoder_layers:
+            layer.channel_stream.rev_att.infer_mode = True
+            layer.channel_stream.rev_att.amp_contrasive_linear = None
+            layer.channel_stream.rev_att.pha_contrasive_linear = None
+        torch.cuda.empty_cache()

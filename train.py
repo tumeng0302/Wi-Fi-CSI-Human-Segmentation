@@ -13,11 +13,15 @@ from torch import nn
 import torch
 import yaml
 
+import torch._dynamo as dynamo
+
+dynamo.config.verbose = True
+
 torch.set_float32_matmul_precision('medium')
 
 def main():
     log = Training_Log(model_name='FullModel', step_mode='step', weight_start=1)
-    DATA_ROOT = '../Data_Disk/CSI_Dataset/'
+    DATA_ROOT = '../CSI_Dataset/'
     torch.cuda.set_device(log.gpu)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("[INFO] Training on: device", torch.cuda.current_device(),
@@ -25,18 +29,19 @@ def main():
 
     # <--------------------------------------Load pre-trained VAE Decoder-------------------------------------->
     decoder = Decoder()
-    print(f'[INFO] Load pre-trained VAE Decoder from {log.decoder_weight}')
-    decoder_weight = torch.load(log.decoder_weight)
-    for name, param in decoder.named_parameters():
-        if 'compiled' in log.decoder_weight:
-            name = '_orig_mod.decoder.' + name
-        if name in decoder_weight:
-            param.data = decoder_weight[name]
-            param.requires_grad = False
-        else:
-            print(f'[Warning] \"{name}\"<- parameter not in pre-trained weight!')
-    print('[INFO] VAE Decoder loaded successfully!')
-    decoder_weight = None
+    if log.decoder_weight is not None:
+        print(f'[INFO] Load pre-trained VAE Decoder from {log.decoder_weight}')
+        decoder_weight = torch.load(log.decoder_weight)
+        for name, param in decoder.named_parameters():
+            if 'compiled' in log.decoder_weight:
+                name = '_orig_mod.decoder.' + name
+            if name in decoder_weight:
+                param.data = decoder_weight[name]
+                param.requires_grad = False
+            else:
+                print(f'[Warning] \"{name}\"<- parameter not in pre-trained weight!')
+        print('[INFO] VAE Decoder loaded successfully!')
+        decoder_weight = None
 
     # <--------------------------------------Create transformer model-------------------------------------->
     with open('./model_config.yaml', 'r') as f:
@@ -60,12 +65,11 @@ def main():
         net_weight = None
         decoder = None
     
-    # net.encoder.requires_grad_(False)
-    net.decoder.requires_grad_(False)
-    print(f'[INFO] The following parameters is trainable:')
-    for name, param in net.named_parameters():
-        if param.requires_grad:
-            print(f'\t{name}')
+    # net.decoder.requires_grad_(False)
+    # print(f'[INFO] The following parameters is trainable:')
+    # for name, param in net.named_parameters():
+    #     if param.requires_grad:
+    #         print(f'\t{name}')
     
     print(f'[INFO] Total parameters: {sum(p.numel() for p in net.parameters())}')
     print(f'[INFO] encoder parameters: {sum(p.numel() for p in net.encoder.parameters())}')
@@ -73,17 +77,15 @@ def main():
     print(f'[INFO] fc_mu parameters: {sum(p.numel() for p in net.fc_mu.parameters())}')
     print(f'[INFO] fc_var parameters: {sum(p.numel() for p in net.fc_var.parameters())}')
     print(f'[INFO] fc parameters: {sum(p.numel() for p in net.fc.parameters())}')
-    # print(f'[INFO] adapter_1 parameters: {sum(p.numel() for p in net.adapter_1.parameters())}')
-    # print(f'[INFO] adapter_2 parameters: {sum(p.numel() for p in net.adapter_2.parameters())}')
     print(f'[INFO] decoder parameters: {sum(p.numel() for p in net.decoder.parameters())}')
     print(f'[INFO] Trainable parameters: {sum(p.numel() for p in net.parameters() if p.requires_grad)}')
     
     # <--------------------------------------Load Dataset-------------------------------------->
-    trainset = CSI_Dataset(data_root=DATA_ROOT, split='train_1', interpolation=0.5, reverse=0.5)
+    trainset = CSI_Dataset(data_root=DATA_ROOT, split='train_1', interpolation=0.5, reverse=0.5, npy_num=log.npy_num)
     trainloader = DataLoader(trainset, batch_size=log.batch, shuffle=True, num_workers=log.num_workers)
-    testset = CSI_Dataset(data_root=DATA_ROOT, split='test')
+    testset = CSI_Dataset(data_root=DATA_ROOT, split='test', npy_num=log.npy_num)
     testloader = DataLoader(testset, batch_size=24, shuffle=True, num_workers=log.num_workers)
-    valset = CSI_Dataset(data_root=DATA_ROOT, split='val')
+    valset = CSI_Dataset(data_root=DATA_ROOT, split='val', npy_num=log.npy_num)
     valloader = DataLoader(valset, batch_size=23, shuffle=True, num_workers=log.num_workers)
 
     # <--------------------------------------Optimizer-------------------------------------->
@@ -99,7 +101,7 @@ def main():
         optimizer = torch.optim.SGD(net.parameters(), lr=log.lr, momentum=0.9, weight_decay=1e-5)
 
     scaler = GradScaler()
-    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[5, 10, 15], gamma=0.7)
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[4, 7, 10, 13, 16], gamma=0.7)
 
     # <--------------------------------------Loss Function-------------------------------------->
     def kl_div(mu:torch.Tensor, logvar:torch.Tensor):
@@ -107,10 +109,10 @@ def main():
     bce = nn.BCEWithLogitsLoss()
     ssim = SSIM(data_range=(0., 1.)).to(device)
     mse = nn.MSELoss()
-    cosine = nn.CosineEmbeddingLoss(margin=0.1)
-    IoU = BinaryJaccardIndex(threshold=0.3).to(device)
+    cosine = nn.CosineEmbeddingLoss(margin=0.5)
+    IoU = BinaryJaccardIndex(threshold=0.5).to(device)
     
-    Wcos = 50
+    Wcos = 0.5
     Wmse = 40
     Wbce = 10
     Wdice = 3
@@ -135,7 +137,7 @@ def main():
         cos_loss = 0
         amp1, pha1 = features[0]
         amp2, pha2 = features[1]
-        amp1, pha1, amp2, pha2 = amp1.view(amp1.shape[0], -1), pha1.view(pha1.shape[0], -1), amp2.view(amp2.shape[0], -1), pha2.view(pha2.shape[0], -1)
+        amp1, pha1, amp2, pha2 = amp1.reshape(amp1.shape[0], -1), pha1.reshape(pha1.shape[0], -1), amp2.reshape(amp2.shape[0], -1), pha2.reshape(pha2.shape[0], -1)
         cos_loss += (cosine(amp1, amp2, label) + cosine(pha1, pha2, label))/2
         return cos_loss/len(features[0]) * Wcos
 
@@ -172,7 +174,7 @@ def main():
             total_loss: torch.Tensor = 0
             
             for amplitude, phase, mask in data:
-                src_mask = random_src_mask([phase.shape[1]//3, phase.shape[1]//3], 0.1).to(device)
+                src_mask = random_src_mask([phase.shape[1]//log.npy_num, phase.shape[1]//log.npy_num], 0.1).to(device)
                 amplitude, phase, mask = amplitude.to(device), phase.to(device), mask.to(device)
 
                 if log.auto_cast:
@@ -193,6 +195,7 @@ def main():
                 with autocast():
                     cos_loss = feature_loss(features, cos_label)
                     total_loss = (total_loss / 2 + cos_loss) / log.grad_accum
+                    # total_loss = total_loss / 2 / log.grad_accum
                 scaler.scale(total_loss).backward()
 
                 if steps % log.grad_accum == 0:
@@ -203,6 +206,7 @@ def main():
             else:
                 cos_loss = feature_loss(features, cos_label)
                 total_loss = (total_loss / 2 + cos_loss) / log.grad_accum
+                # total_loss = total_loss / 2 / log.grad_accum
                 total_loss.backward()
 
                 if steps % log.grad_accum == 0:
@@ -223,7 +227,7 @@ def main():
             loss_str = log.train_loss.avg_loss()
             i_bar.set_postfix_str(str(f"{loss_str}"))
             
-            if steps % 3000 == 0 and steps != 0:
+            if steps % 3000 == 0 and steps != 0:# 
                 train_img = torch.cat((mask.cpu(), torch.sigmoid(out).cpu().detach()), dim=2)
                 # ---------------------------testing---------------------------#
                 net.eval()
@@ -247,6 +251,7 @@ def main():
                     test_img = torch.cat((mask.cpu(), torch.sigmoid(out).cpu().detach()), dim=2)
 
                 # ---------------------------validation---------------------------#
+                net.eval()
                 with torch.no_grad():
                     v_bar = tqdm(valloader, unit='iter', desc=f"epoch {eps+1}", ncols=140)
                     for amplitude, phase, mask in v_bar:

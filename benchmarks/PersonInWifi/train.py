@@ -5,11 +5,14 @@ import pytorch_lightning as pl
 from pytorch_lightning import loggers as pl_loggers
 from pytorch_lightning.strategies import DDPStrategy
 from torchmetrics.classification import BinaryJaccardIndex
+from torchmetrics.image import StructuralSimilarityIndexMeasure as SSIM
 import argparse
 import pyopenpose as op
 from torchvision import transforms
 import os
 import sys
+import numpy as np
+import torchvision
 
 from data.dataset import PersonInWifiDataset
 from models import PIF
@@ -27,7 +30,7 @@ def argparser():
     # openpose
     parser.add_argument('--skeleton_model', type=str, default='/root/openpose/models', help='Path to the openpose library')
     # metric
-    parser.add_argument('--threshold', type=float, default=0.3, help='Threshold for binary segmentation')
+    parser.add_argument('--threshold', type=float, default=0.5, help='Threshold for binary segmentation')
     # resume or test
     parser.add_argument('--ckpt_path', help='Path to the checkpoint file to resume training or testing', required='--resume' in sys.argv or '--test' in sys.argv)
     parser.add_argument('--resume', action='store_true', help='Resume training')
@@ -69,6 +72,10 @@ class LitModel(pl.LightningModule):
 
         # metric
         self.iou = BinaryJaccardIndex(threshold=args.threshold)
+        self.ssim = SSIM(data_range=(0., 1.))
+        self.log_iou = None
+        self.log_ssim = None
+        self.log_dice = None
 
     def generate_skeleton(self, img):
         # generate JHM and PAF of skeleton
@@ -155,11 +162,37 @@ class LitModel(pl.LightningModule):
 
         # model
         sm, jhm, paf = self.model(amp)
-
+        from utils import dice_loss
         # metric
         # IoU bewtween mask_gt and sm
         iou = self.iou(sm, mask_gt.long())
-        self.log('test_iou', iou)
+        dice = dice_loss(sm.squeeze(1), mask_gt.squeeze(1))
+        ssim = self.ssim(sm.float(), mask_gt.float())
+        
+        self.log_dict({
+            'test_iou': iou,
+            'test_dice': dice,
+            'test_ssim': ssim,
+        }, on_step=True, prog_bar=True, logger=True, sync_dist=True)
+
+        if self.log_iou is None:
+            self.log_iou = iou.cpu().detach().numpy().reshape(1)
+            self.log_ssim = ssim.cpu().detach().numpy().reshape(1)
+            self.log_dice = dice.cpu().detach().numpy().reshape(1)
+        else:
+            self.log_iou = np.concatenate((self.log_iou, iou.cpu().detach().numpy().reshape(1)))
+            self.log_ssim = np.concatenate((self.log_ssim, ssim.cpu().detach().numpy().reshape(1)))
+            self.log_dice = np.concatenate((self.log_dice, dice.cpu().detach().numpy().reshape(1)))
+
+        # if batch_idx % 76 == 0:
+        #     sm = sm.cpu().detach()
+        #     threshed = sm.clone()
+        #     threshed[threshed > args.threshold] = 1
+        #     threshed[threshed <= args.threshold] = 0
+        #     test_img = torch.cat((mask_gt.cpu(), sm, threshed), dim=2)
+        #     torchvision.utils.save_image(test_img, f'./out/val_img_{batch_idx}.png')
+        
+
 
         # log image
         self.logger.experiment.add_images('test-mask-gt', mask_gt[0:1], batch_idx)
@@ -185,13 +218,21 @@ trainer = pl.Trainer(max_epochs=10,
                      val_check_interval=10000, limit_val_batches=0.25,
                      strategy=DDPStrategy(find_unused_parameters=True),
                      callbacks=pl.callbacks.ModelCheckpoint(every_n_train_steps=10000, save_top_k=-1),
-                     logger=tb_logger)
+                     logger=tb_logger,
+                     devices=[1])
 
 if args.test:
     # Testing
-    test_dataset = PersonInWifiDataset(data_root=args.data_root, split='random_1')
-    test_loader = DataLoader(test_dataset, batch_size=args.batch_size)
+    split = 'test'
+    test_dataset = PersonInWifiDataset(data_root=args.data_root, split=split)
+    test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, num_workers=8)
     trainer.test(model, test_loader, ckpt_path=args.ckpt_path)
+    print(f'Average IoU: {model.log_iou.mean()}')
+    print(f'Average SSIM: {model.log_ssim.mean()}')
+    print(f'Average Dice: {model.log_dice.mean()}')
+    np.save(f'./out/{split}_iou.npy', model.log_iou)
+    np.save(f'./out/{split}_ssim.npy', model.log_ssim)
+    np.save(f'./out/{split}_dice.npy', model.log_dice)
 else:
     # Training
     # Create datasets

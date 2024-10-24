@@ -118,7 +118,38 @@ class VAE(nn.Module):
         x = x.view(-1, self.latent_dim)
         mu, logvar = self.fc_mu(x), self.fc_logvar(x)
         z = self.reparameterize(mu, logvar)
-        x = self.fc(z)
-        x = x.view(-1, 1024, self.feature_size[0], self.feature_size[1])
-        x = self.decoder(x)
-        return x, mu, logvar
+        z = self.fc(z)
+        z = z.view(-1, 1024, self.feature_size[0], self.feature_size[1])
+        x = self.decoder(z)
+        return x, mu, logvar, z
+
+class VAE_Finetune(nn.Module):
+    def __init__(self, activation='leakyrelu') -> None:
+        super(VAE_Finetune, self).__init__()
+        self.encoder = Encoder(activation=activation)
+        self.feature_size = self.encoder.feature_size
+        self.latent_dim = 1024*self.feature_size[0]*self.feature_size[1]
+        self.fc_mu = nn.Sequential(
+            nn.Linear(self.latent_dim , self.latent_dim),
+        )
+        self.fc_logvar = nn.Sequential(
+            nn.Linear(self.latent_dim , self.latent_dim),
+        )
+        self.fc = nn.Sequential(
+            nn.Linear(self.latent_dim , self.latent_dim),
+        )
+
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5*logvar)
+        eps = torch.randn_like(std)
+        return mu + eps*std
+    
+    def forward(self, x):
+        x = self.encoder(x)
+        x = x.view(-1, self.latent_dim)
+        mu, logvar = self.fc_mu(x), self.fc_logvar(x)
+        z = self.reparameterize(mu, logvar)
+        z = self.fc(z)
+        z = z.view(-1, 1024, self.feature_size[0], self.feature_size[1])
+
+        return z

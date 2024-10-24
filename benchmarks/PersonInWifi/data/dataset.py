@@ -12,7 +12,7 @@ import cv2
 import json
 
 def get_data_list(split: str, data_root: str, mode: str = 'merge'):
-    valid_type = ['train', 'train_1', 'train_2', 'train_3', 'val', 'test', 'occu', 'random']
+    valid_type = ['train', 'train_1', 'train_2', 'train_3', 'val', 'test', 'occu', 'random_1', 'random_2', 'random_3']
     if split not in valid_type:
         raise ValueError(f'Invalid split type: {split}, should be one of {valid_type}')
     
